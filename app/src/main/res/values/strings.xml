@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Clipboard Sync</string>
+    <string name="sync_button_label">📤 Sync</string>
+</resources>
