@@ -5,6 +5,7 @@ import threading
 import uvicorn
 import socket
 import tkinter as tk
+from zeroconf import Zeroconf, ServiceInfo
 
 # === FastAPI server ===
 app = FastAPI()
@@ -32,11 +33,11 @@ async def debug_clipboard(request: Request):
     else:
         return {"detail": "Only GET and POST supported"}
 
-# === Start FastAPI server in a thread ===
+# === Start FastAPI server ===
 def start_server():
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
-# === Get IP address ===
+# === Get local IP address ===
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -48,7 +49,24 @@ def get_ip():
         s.close()
     return ip
 
-# === Simple GUI using tkinter ===
+# === Register service via Zeroconf ===
+def register_service():
+    ip = get_ip()
+    desc = {"info": "Clipboard Sync Server"}
+    info = ServiceInfo(
+        "_http._tcp.local.",
+        "ClipboardSyncServer._http._tcp.local.",
+        addresses=[socket.inet_aton(ip)],
+        port=8000,
+        properties=desc,
+        server=f"{socket.gethostname()}.local."
+    )
+
+    zeroconf = Zeroconf()
+    zeroconf.register_service(info)
+    print(f"📣 Zeroconf service registered: {ip}:8000")
+
+# === Simple tkinter GUI ===
 def launch_ui():
     ip = get_ip()
     window = tk.Tk()
@@ -56,7 +74,7 @@ def launch_ui():
 
     tk.Label(window, text="Server is running!", font=("Helvetica", 16)).pack(pady=10)
     tk.Label(window, text=f"Your IP Address: {ip}", font=("Helvetica", 14), fg="blue").pack(pady=10)
-    tk.Label(window, text="Use this IP in your Android app", font=("Helvetica", 12)).pack(pady=5)
+    tk.Label(window, text="Auto-detectable from Android", font=("Helvetica", 12)).pack(pady=5)
     tk.Label(window, text="Listening on port: 8000", font=("Helvetica", 12)).pack(pady=5)
 
     window.geometry("320x200")
@@ -65,4 +83,5 @@ def launch_ui():
 # === Main ===
 if __name__ == "__main__":
     threading.Thread(target=start_server, daemon=True).start()
+    register_service()
     launch_ui()

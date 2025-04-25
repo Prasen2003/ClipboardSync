@@ -2,7 +2,8 @@ package com.example.clipboardsync
 
 import android.app.*
 import android.content.*
-import android.net.Uri
+import android.net.*
+import android.net.nsd.*
 import android.os.*
 import android.provider.Settings
 import android.widget.Toast
@@ -18,7 +19,7 @@ import androidx.compose.ui.unit.sp
 import okhttp3.*
 import java.io.IOException
 
-// ⬇️ Composable UI
+// Composable UI
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -26,20 +27,25 @@ fun ClipboardSyncApp() {
 
     var lastText by remember { mutableStateOf("") }
 
-    // Load and remember the IP address from SharedPreferences
     var ipAddress by remember {
         mutableStateOf(
             context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                .getString("server_ip", "192.168.0.171") ?: ""
+                .getString("server_ip", "") ?: ""
         )
     }
 
     // Save IP on change
     fun saveIp(ip: String) {
         context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .edit()
-            .putString("server_ip", ip)
-            .apply()
+            .edit().putString("server_ip", ip).apply()
+    }
+
+    // Auto-discovery effect
+    LaunchedEffect(Unit) {
+        discoverService(context) { ip ->
+            ipAddress = ip
+            saveIp(ip)
+        }
     }
 
     // Clipboard auto-sync listener
@@ -52,19 +58,15 @@ fun ClipboardSyncApp() {
                 sendToServer(context, text, ipAddress)
             }
         }
-
         clipboardManager.addPrimaryClipChangedListener(listener)
-
         onDispose {
             clipboardManager.removePrimaryClipChangedListener(listener)
         }
     }
 
-    // UI Layout
+    // UI
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -100,17 +102,53 @@ fun ClipboardSyncApp() {
     }
 }
 
-// ⬇️ Send to FastAPI server
-fun sendToServer(context: Context, text: String, ip: String) {
-    val client = OkHttpClient()
-    val requestBody = FormBody.Builder()
-        .add("clipboard", text)
-        .build()
+// Auto-discover FastAPI server using NSD
+fun discoverService(context: Context, onFound: (String) -> Unit) {
+    val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
+    val serviceType = "_http._tcp."
+    val serviceNamePrefix = "ClipboardSyncServer"
 
-    val request = Request.Builder()
-        .url("http://$ip:8000/clipboard")
-        .post(requestBody)
-        .build()
+    lateinit var discoveryListener: NsdManager.DiscoveryListener
+
+    discoveryListener = object : NsdManager.DiscoveryListener {
+        override fun onDiscoveryStarted(serviceType: String) {}
+        override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
+        override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {}
+        override fun onDiscoveryStopped(serviceType: String) {}
+
+        override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+            if (serviceInfo.serviceName.contains(serviceNamePrefix)) {
+                nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {}
+                    override fun onServiceResolved(resolved: NsdServiceInfo) {
+                        val host = resolved.host.hostAddress
+                        if (host != null) {
+                            onFound(host)
+                            // ✅ Proper reference to stop discovery
+                            nsdManager.stopServiceDiscovery(discoveryListener)
+                        }
+                    }
+                })
+            }
+        }
+
+        override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+    }
+
+    nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+}
+
+
+// Send clipboard to server
+fun sendToServer(context: Context, text: String, ip: String) {
+    if (ip.isBlank()) {
+        Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val client = OkHttpClient()
+    val requestBody = FormBody.Builder().add("clipboard", text).build()
+    val request = Request.Builder().url("http://$ip:8000/clipboard").post(requestBody).build()
 
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
@@ -121,24 +159,25 @@ fun sendToServer(context: Context, text: String, ip: String) {
 
         override fun onResponse(call: Call, response: Response) {
             Handler(Looper.getMainLooper()).post {
-                if (response.isSuccessful) {
-                    Toast.makeText(context, "✅ Clipboard synced", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
-                }
+                Toast.makeText(
+                    context,
+                    if (response.isSuccessful) "✅ Clipboard synced" else "⚠️ Server error: ${response.code}",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     })
 }
 
-// ⬇️ Fetch from FastAPI server
+// Fetch clipboard from server
 fun fetchClipboardFromServer(context: Context, ip: String) {
-    val client = OkHttpClient()
+    if (ip.isBlank()) {
+        Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        return
+    }
 
-    val request = Request.Builder()
-        .url("http://$ip:8000/clipboard")
-        .get()
-        .build()
+    val client = OkHttpClient()
+    val request = Request.Builder().url("http://$ip:8000/clipboard").get().build()
 
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
@@ -171,22 +210,16 @@ fun fetchClipboardFromServer(context: Context, ip: String) {
     })
 }
 
-// ⬇️ MainActivity
+// MainActivity
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        setContent {
-            ClipboardSyncApp()
-        }
-
+        setContent { ClipboardSyncApp() }
         checkOverlayPermission()
     }
 
     override fun onResume() {
         super.onResume()
-
         if (intent.getBooleanExtra("syncNow", false)) {
             Handler(Looper.getMainLooper()).postDelayed({
                 syncClipboardFromActivity()
@@ -199,9 +232,7 @@ class MainActivity : ComponentActivity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = clipboard.primaryClip
         val text = clip?.getItemAt(0)?.text?.toString()
-
-        val ip = getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .getString("server_ip", "192.168.0.171") ?: "192.168.0.171"
+        val ip = getSharedPreferences("settings", Context.MODE_PRIVATE).getString("server_ip", "") ?: ""
 
         if (!text.isNullOrEmpty()) {
             sendToServer(this, text, ip)
@@ -217,10 +248,7 @@ class MainActivity : ComponentActivity() {
     private fun checkOverlayPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.canDrawOverlays(this)) {
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
+                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                 startActivity(intent)
             } else {
                 startOverlayService()
@@ -232,11 +260,8 @@ class MainActivity : ComponentActivity() {
 
     private fun startOverlayService() {
         val intent = Intent(this, OverlayService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+        else startService(intent)
 
         Toast.makeText(this, "✅ Overlay service started", Toast.LENGTH_SHORT).show()
     }
