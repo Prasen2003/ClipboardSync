@@ -90,11 +90,17 @@ fun ClipboardSyncApp() {
             Text("📤 Sync Clipboard Now")
         }
 
+        Button(onClick = {
+            fetchClipboardFromServer(context, ipAddress)
+        }) {
+            Text("📥 Fetch from PC")
+        }
+
         Text("Last Copied: $lastText", fontSize = 14.sp)
     }
 }
 
-// ⬇️ Network request to FastAPI server
+// ⬇️ Send to FastAPI server
 fun sendToServer(context: Context, text: String, ip: String) {
     val client = OkHttpClient()
     val requestBody = FormBody.Builder()
@@ -125,13 +131,52 @@ fun sendToServer(context: Context, text: String, ip: String) {
     })
 }
 
-// ⬇️ MainActivity with updated overlay permission check
+// ⬇️ Fetch from FastAPI server
+fun fetchClipboardFromServer(context: Context, ip: String) {
+    val client = OkHttpClient()
+
+    val request = Request.Builder()
+        .url("http://$ip:8000/clipboard")
+        .get()
+        .build()
+
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "❌ Failed to fetch: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            val result = response.body?.string()
+            if (response.isSuccessful && result != null) {
+                val json = Regex("\"clipboard\"\\s*:\\s*\"(.*?)\"").find(result)
+                val text = json?.groupValues?.get(1)?.replace("\\n", "\n")?.replace("\\\"", "\"")
+
+                if (!text.isNullOrEmpty()) {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = ClipData.newPlainText("Synced", text)
+                    clipboard.setPrimaryClip(clip)
+
+                    Handler(Looper.getMainLooper()).post {
+                        Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } else {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    })
+}
+
+// ⬇️ MainActivity
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Compose UI
         setContent {
             ClipboardSyncApp()
         }
