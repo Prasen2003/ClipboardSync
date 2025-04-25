@@ -1,11 +1,20 @@
-from fastapi import FastAPI, Form, Request
-from fastapi.middleware.cors import CORSMiddleware
-import pyperclip
 import threading
-import uvicorn
 import socket
-import tkinter as tk
+import pyperclip
+import os
+import sys
+import time
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+from pystray import Icon, MenuItem, Menu
+from PIL import Image, ImageDraw
 from zeroconf import Zeroconf, ServiceInfo
+
+# === Globals ===
+zeroconf = Zeroconf()
+info = None
+tray_icon = None
 
 # === FastAPI server ===
 app = FastAPI()
@@ -51,6 +60,7 @@ def get_ip():
 
 # === Register service via Zeroconf ===
 def register_service():
+    global info
     ip = get_ip()
     desc = {"info": "Clipboard Sync Server"}
     info = ServiceInfo(
@@ -61,27 +71,69 @@ def register_service():
         properties=desc,
         server=f"{socket.gethostname()}.local."
     )
-
-    zeroconf = Zeroconf()
     zeroconf.register_service(info)
     print(f"📣 Zeroconf service registered: {ip}:8000")
+    return ip
 
-# === Simple tkinter GUI ===
-def launch_ui():
-    ip = get_ip()
-    window = tk.Tk()
-    window.title("📋 Clipboard Sync Server")
+def unregister_service():
+    global info
+    if info:
+        try:
+            zeroconf.unregister_service(info)
+            print("🛑 Zeroconf service unregistered.")
+        except Exception as e:
+            print(f"⚠️ Error unregistering service: {e}")
+        info = None
 
-    tk.Label(window, text="Server is running!", font=("Helvetica", 16)).pack(pady=10)
-    tk.Label(window, text=f"Your IP Address: {ip}", font=("Helvetica", 14), fg="blue").pack(pady=10)
-    tk.Label(window, text="Auto-detectable from Android", font=("Helvetica", 12)).pack(pady=5)
-    tk.Label(window, text="Listening on port: 8000", font=("Helvetica", 12)).pack(pady=5)
+# === Tray icon creation ===
+def create_icon():
+    icon_image = Image.new("RGBA", (64, 64), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(icon_image)
+    draw.rectangle((0, 0, 64, 64), fill=(0, 0, 255))
+    draw.text((18, 20), "CB", fill="white")
+    return icon_image
 
-    window.geometry("320x200")
-    window.mainloop()
+# === Tray Menu Callbacks ===
+def on_quit(icon, item):
+    unregister_service()
+    icon.stop()
+
+def on_restart(icon, item):
+    unregister_service()
+    icon.stop()
+    print("🔄 Restarting app...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+# === Tray Menu ===
+def create_tray_menu(ip=None):
+    ip = ip or get_ip()
+    return Menu(
+        MenuItem("Restart", on_restart),
+        MenuItem("Quit", on_quit),
+        MenuItem(f"IP Address: {ip}", lambda *_: None, enabled=False)
+    )
+
+# === Monitor IP change and auto-restart ===
+def monitor_ip_change(original_ip):
+    while True:
+        time.sleep(5)
+        current_ip = get_ip()
+        if current_ip != original_ip:
+            print(f"🌐 IP changed from {original_ip} ➡ {current_ip}. Restarting...")
+            unregister_service()
+            os.execl(sys.executable, sys.executable, *sys.argv)
 
 # === Main ===
 if __name__ == "__main__":
+    # Start FastAPI server in background
     threading.Thread(target=start_server, daemon=True).start()
-    register_service()
-    launch_ui()
+
+    # Register Zeroconf service
+    ip_address = register_service()
+
+    # Start IP monitor thread
+    threading.Thread(target=monitor_ip_change, args=(ip_address,), daemon=True).start()
+
+    # Create and run tray icon
+    tray_icon = Icon("ClipboardSync", create_icon(), menu=create_tray_menu(ip_address))
+    tray_icon.run()
