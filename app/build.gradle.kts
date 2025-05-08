@@ -40,7 +40,7 @@ android {
 }
 
 dependencies {
-
+    implementation("org.json:json:20240303")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

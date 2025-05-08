@@ -1,5 +1,5 @@
 package com.example.clipboardsync
-
+import org.json.JSONObject // Add this import at the top
 import android.app.*
 import android.content.*
 import android.net.*
@@ -189,16 +189,20 @@ fun fetchClipboardFromServer(context: Context, ip: String) {
         override fun onResponse(call: Call, response: Response) {
             val result = response.body?.string()
             if (response.isSuccessful && result != null) {
-                val json = Regex("\"clipboard\"\\s*:\\s*\"(.*?)\"").find(result)
-                val text = json?.groupValues?.get(1)?.replace("\\n", "\n")?.replace("\\\"", "\"")
+                try {
+                    val text = JSONObject(result).getString("clipboard")
+                    if (text.isNotEmpty()) {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("Synced", text)
+                        clipboard.setPrimaryClip(clip)
 
-                if (!text.isNullOrEmpty()) {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val clip = ClipData.newPlainText("Synced", text)
-                    clipboard.setPrimaryClip(clip)
-
+                        Handler(Looper.getMainLooper()).post {
+                            Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
                     Handler(Looper.getMainLooper()).post {
-                        Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "⚠️ Parse error: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                     }
                 }
             } else {
