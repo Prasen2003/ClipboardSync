@@ -10,19 +10,28 @@ import uvicorn
 from pystray import Icon, MenuItem, Menu
 from PIL import Image, ImageDraw
 from zeroconf import Zeroconf, ServiceInfo
+import tkinter as tk
+from tkinter import ttk
+from pathlib import Path
 
 # === Globals ===
 zeroconf = Zeroconf()
 info = None
 tray_icon = None
 ip_address = None
-tray_icon_active = False  # Flag to track tray icon status
-last_ip = None  # To track the last IP address
-ip_changed = False  # Flag to track if IP has already changed
-monitor_thread = None  # Thread reference to stop the monitor when restarting
-stop_monitoring = False  # Flag to stop the monitoring thread
-is_restarting = False  # Flag to prevent multiple restarts during the same network change
-restart_cooldown = 5  # Cooldown time in seconds to prevent rapid restarts
+tray_icon_active = False
+last_ip = None
+ip_changed = False
+monitor_thread = None
+stop_monitoring = False
+is_restarting = False
+restart_cooldown = 5
+connected_clients = set()
+clipboard_history = []
+HISTORY_LIMIT = 20
+HISTORY_FILE = Path("clipboard_history.txt")
+tk_window = None
+root = None  # Tkinter root
 
 # === FastAPI server ===
 app = FastAPI()
@@ -36,12 +45,19 @@ app.add_middleware(
 
 @app.api_route("/clipboard", methods=["GET", "POST", "PUT", "DELETE"])
 async def debug_clipboard(request: Request):
-    print(f"📡 Received method: {request.method}")
+    client_ip = request.client.host
+    connected_clients.add(client_ip)
+
+    print(f"📡 Received method: {request.method} from {client_ip}")
     if request.method == "POST":
         form = await request.form()
         clipboard = form.get("clipboard", "")
         print(f"📋 Received clipboard: {clipboard}")
         pyperclip.copy(clipboard)
+
+        if clipboard.strip():
+            add_to_history(clipboard)
+
         return {"status": "received", "clipboard": clipboard}
     elif request.method == "GET":
         clipboard = pyperclip.paste()
@@ -50,11 +66,32 @@ async def debug_clipboard(request: Request):
     else:
         return {"detail": "Only GET and POST supported"}
 
-# === Start FastAPI server ===
+# === Helper functions ===
+def load_history_from_file():
+    global clipboard_history
+    if HISTORY_FILE.exists():
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f.readlines() if line.strip()]
+            clipboard_history = lines[:HISTORY_LIMIT]
+
+def save_history_to_file():
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        for entry in clipboard_history[:HISTORY_LIMIT]:
+            f.write(entry + "\n")
+
+def add_to_history(text):
+    global clipboard_history
+    if text.strip() and (not clipboard_history or clipboard_history[0] != text):
+        if text in clipboard_history:
+            clipboard_history.remove(text)
+        clipboard_history.insert(0, text)
+        if len(clipboard_history) > HISTORY_LIMIT:
+            clipboard_history.pop()
+        save_history_to_file()
+
 def start_server():
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
-# === Get local IP address ===
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -66,7 +103,6 @@ def get_ip():
         s.close()
     return ip
 
-# === Register service via Zeroconf ===
 def register_service():
     global info
     ip = get_ip()
@@ -93,7 +129,6 @@ def unregister_service():
             print(f"⚠️ Error unregistering service: {e}")
         info = None
 
-# === Tray icon creation ===
 def create_icon():
     icon_image = Image.new("RGBA", (64, 64), (255, 255, 255, 0))
     draw = ImageDraw.Draw(icon_image)
@@ -101,107 +136,153 @@ def create_icon():
     draw.text((18, 20), "CB", fill="white")
     return icon_image
 
-# === Tray Menu Callbacks ===
 def on_quit(icon, item):
     unregister_service()
     icon.stop()
+    if root:
+        root.quit()
 
 def on_restart(icon, item):
     unregister_service()
     icon.stop()
+    if root:
+        root.quit()
     print("🔄 Restarting app...")
     os.execl(sys.executable, sys.executable, *sys.argv)
 
-# === Tray Menu ===
+def show_connections(icon, item):
+    def show_window():
+        global tk_window
+        if tk_window and tk_window.winfo_exists():
+            tk_window.lift()
+            return
+
+        tk_window = tk.Toplevel(root)
+        tk_window.title("Connected Devices")
+        tk_window.geometry("300x200")
+
+        ttk.Label(tk_window, text="Connected IPs:", font=("Segoe UI", 12)).pack(pady=10)
+        box = tk.Listbox(tk_window, font=("Segoe UI", 10))
+        box.pack(expand=True, fill="both", padx=10)
+
+        for ip in sorted(connected_clients):
+            box.insert(tk.END, ip)
+
+        ttk.Button(tk_window, text="Close", command=tk_window.destroy).pack(pady=5)
+
+    root.after(0, show_window)
+
+def show_clipboard_history(icon, item):
+    def show_window():
+        global tk_window
+        if tk_window and tk_window.winfo_exists():
+            tk_window.lift()
+            return
+
+        tk_window = tk.Toplevel(root)
+        tk_window.title("Clipboard History")
+        tk_window.geometry("400x300")
+
+        ttk.Label(tk_window, text="Clipboard History:", font=("Segoe UI", 12)).pack(pady=10)
+        box = tk.Listbox(tk_window, font=("Segoe UI", 10), selectmode=tk.SINGLE)
+        box.pack(expand=True, fill="both", padx=10)
+
+        for entry in clipboard_history:
+            display = entry if len(entry) <= 100 else entry[:100] + "..."
+            box.insert(tk.END, display)
+
+        def on_copy_selected():
+            selected = box.curselection()
+            if selected:
+                pyperclip.copy(clipboard_history[selected[0]])
+
+        ttk.Button(tk_window, text="Copy Selected", command=on_copy_selected).pack(pady=5)
+
+        def on_clear_history():
+            global clipboard_history
+            clipboard_history.clear()
+            save_history_to_file()  # Save the empty history
+            box.delete(0, tk.END)  # Remove items from the ListBox
+            print("🧹 Clipboard history cleared.")
+
+        ttk.Button(tk_window, text="Clear History", command=on_clear_history).pack(pady=5)
+        ttk.Button(tk_window, text="Close", command=tk_window.destroy).pack(pady=5)
+
+    root.after(0, show_window)
+
 def create_tray_menu(ip=None):
     ip = ip or get_ip()
     return Menu(
+        MenuItem("Show Connections", show_connections),
+        MenuItem("Clipboard History", show_clipboard_history),
         MenuItem("Restart", on_restart),
         MenuItem("Quit", on_quit),
         MenuItem(f"IP Address: {ip}", lambda *_: None, enabled=False)
     )
 
-# === Restart application when IP changes ===
 def restart_app():
     global is_restarting, tray_icon_active
     if not is_restarting:
         is_restarting = True
         print("🌐 IP changed, restarting the app...")
-        
-        # Stop the existing tray icon if it's active
         if tray_icon_active:
             tray_icon.stop()
-            tray_icon_active = False  # Mark tray icon as not active
-        
+            tray_icon_active = False
         unregister_service()
-        time.sleep(restart_cooldown)  # Cooldown to prevent multiple restarts
-        
-        # Restart the app
+        time.sleep(restart_cooldown)
         os.execl(sys.executable, sys.executable, *sys.argv)
     else:
         print("🛑 App is already restarting. Ignoring IP change.")
 
-# === Monitor IP change and auto-restart ===
 def monitor_ip_change():
     global ip_address, last_ip, ip_changed, stop_monitoring, is_restarting
-    debounce_time = 3  # Seconds to wait before allowing another check
-    
-    # Skip initial restart to prevent false loop
+    debounce_time = 3
     ip_initialized = False
-    
+
     while True:
         if stop_monitoring:
             print("🛑 Stopping IP monitoring thread...")
-            break  # Exit the loop if the flag is set
-        
+            break
         time.sleep(1)
         current_ip = get_ip()
-        
-        # Skip the restart logic if IP is None or hasn't been initialized yet
         if not ip_initialized and current_ip != "127.0.0.1":
             ip_initialized = True
             last_ip = current_ip
             print(f"🌐 Initial IP detected: {current_ip}. No restart triggered yet.")
             continue
-        
-        # Only restart the app if the IP has changed and is different from the last known IP
         if current_ip != last_ip and not is_restarting:
             ip_changed = True
             print(f"🌐 IP changed from {last_ip} ➡ {current_ip}. Restarting app...")
-            last_ip = current_ip  # Update the last known IP before restarting
-            restart_app()  # Restart the app with the new IP
+            last_ip = current_ip
+            restart_app()
         elif current_ip == last_ip:
-            ip_changed = False  # Reset flag if the IP is the same
-        time.sleep(debounce_time)  # Add a small delay to avoid too frequent IP checks
+            ip_changed = False
+        time.sleep(debounce_time)
 
 # === Main ===
 if __name__ == "__main__":
-    # Start FastAPI server in background
+    load_history_from_file()  # Load history when app starts
+
+    root = tk.Tk()
+    root.withdraw()  # Hide root window
+
+    # Start FastAPI server
     threading.Thread(target=start_server, daemon=True).start()
 
-    # Register Zeroconf service
+    # Register Zeroconf
     ip_address = register_service()
 
-    # Start IP monitor thread
+    # Monitor IP changes
     monitor_thread = threading.Thread(target=monitor_ip_change, daemon=True)
     monitor_thread.start()
 
-    # Start Tray icon initially
+    # Create tray icon
     tray_icon = Icon("ClipboardSync", create_icon(), menu=create_tray_menu(ip_address))
-    
-    # Check if tray icon is already active, stop it if necessary
-    if tray_icon_active:
-        tray_icon.stop()
-    
     tray_thread = threading.Thread(target=tray_icon.run, daemon=True)
     tray_thread.start()
-    
-    # Mark tray icon as active
     tray_icon_active = True
 
-    # Keep the main thread alive to keep the tray icon running
     try:
-        while True:
-            time.sleep(1)
+        root.mainloop()  # Run GUI event loop in main thread
     except KeyboardInterrupt:
         print("🔴 Application terminated.")
