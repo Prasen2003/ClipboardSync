@@ -38,7 +38,7 @@ fun ClipboardSyncApp() {
 
     fun addToHistory(text: String) {
         val newHistory = listOf(text) + history.filterNot { it == text }
-        history = newHistory.take(20) // Keep max 20 entries
+        history = newHistory.take(20)
         val json = JSONArray(newHistory)
         prefs.edit().putString("clipboard_history", json.toString()).apply()
     }
@@ -53,6 +53,11 @@ fun ClipboardSyncApp() {
         discoverService(context) { ip ->
             ipAddress = ip
             saveIp(ip)
+        }
+        val initialText = clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()
+        if (!initialText.isNullOrBlank()) {
+            lastText = initialText
+            addToHistory(initialText)
         }
     }
 
@@ -73,19 +78,37 @@ fun ClipboardSyncApp() {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        TextField(
-            value = ipAddress,
-            onValueChange = {
-                ipAddress = it
-                saveIp(it)
-            },
-            label = { Text("Server IP Address") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextField(
+                value = ipAddress,
+                onValueChange = {
+                    ipAddress = it
+                    saveIp(it)
+                },
+                label = { Text("Server IP Address") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+
+            Button(onClick = {
+                discoverService(context) { ip ->
+                    ipAddress = ip
+                    saveIp(ip)
+                    Toast.makeText(context, "🔄 IP updated to $ip", Toast.LENGTH_SHORT).show()
+                }
+            }) {
+                Text("🔄")
+            }
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
@@ -112,15 +135,32 @@ fun ClipboardSyncApp() {
         }
 
         Text("Clipboard History", fontSize = 16.sp)
-        LazyColumn {
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(history) { item ->
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(item, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { deleteFromHistory(item) }) {
-                        Text("🗑️")
+                    Text(
+                        item.take(50).replace("\n", " "),
+                        fontSize = 14.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Row {
+                        IconButton(onClick = {
+                            val clip = ClipData.newPlainText("Copied", item)
+                            clipboardManager.setPrimaryClip(clip)
+                            Toast.makeText(context, "📋 Copied to clipboard", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("📋")
+                        }
+                        IconButton(onClick = { deleteFromHistory(item) }) {
+                            Text("🗑️")
+                        }
                     }
                 }
             }
