@@ -21,6 +21,9 @@ import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 @Composable
 fun ClipboardSyncApp() {
@@ -136,12 +139,15 @@ fun ClipboardSyncApp() {
 
         Text("Clipboard History", fontSize = 16.sp)
 
+        var selectedItem by remember { mutableStateOf<String?>(null) }
+
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(history) { item ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp),
+                        .padding(vertical = 4.dp)
+                        .clickable { selectedItem = item },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -164,6 +170,32 @@ fun ClipboardSyncApp() {
                     }
                 }
             }
+        }
+        if (selectedItem != null) {
+            val scrollState = rememberScrollState()
+
+            AlertDialog(
+                onDismissRequest = { selectedItem = null },
+                title = { Text("Clipboard Entry") },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(min = 100.dp, max = 400.dp)
+                            .verticalScroll(scrollState)
+                            .padding(4.dp)
+                    ) {
+                        Text(
+                            text = selectedItem!!,
+                            fontSize = 14.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { selectedItem = null }) {
+                        Text("Close")
+                    }
+                }
+            )
         }
     }
 }
