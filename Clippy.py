@@ -187,24 +187,61 @@ def show_clipboard_history(icon, item):
         box = tk.Listbox(tk_window, font=("Segoe UI", 10), selectmode=tk.SINGLE)
         box.pack(expand=True, fill="both", padx=10)
 
+        entry_map = []
+
         for entry in clipboard_history:
-            display = entry if len(entry) <= 100 else entry[:100] + "..."
-            box.insert(tk.END, display)
+            display = entry.replace("\n", "⏎")
+            short = display if len(display) <= 100 else display[:100] + "..."
+            box.insert(tk.END, short)
+            entry_map.append(entry)
+
+        # === Tooltip widget ===
+        tooltip = tk.Toplevel(tk_window)
+        tooltip.withdraw()
+        tooltip.overrideredirect(True)
+        label = tk.Label(tooltip, text="", justify="left", bg="#ffffe0", relief="solid", borderwidth=1,
+                         font=("Segoe UI", 9), wraplength=350)
+        label.pack()
+
+        def show_tooltip(event):
+            try:
+                index = box.nearest(event.y)
+                full_text = entry_map[index]
+                label.config(text=full_text)
+                x = event.x_root + 10
+                y = event.y_root + 10
+                tooltip.geometry(f"+{x}+{y}")
+                tooltip.deiconify()
+            except Exception:
+                tooltip.withdraw()
+
+        def hide_tooltip(event):
+            tooltip.withdraw()
+
+        box.bind("<Motion>", show_tooltip)
+        box.bind("<Leave>", hide_tooltip)
 
         def on_copy_selected():
             selected = box.curselection()
             if selected:
-                pyperclip.copy(clipboard_history[selected[0]])
+                full_text = entry_map[selected[0]]
+                pyperclip.copy(full_text)
+                print("✅ Copied to clipboard:", repr(full_text))
 
-        ttk.Button(tk_window, text="Copy Selected", command=on_copy_selected).pack(pady=5)
+        def on_double_click(event):
+            on_copy_selected()
+
+        box.bind("<Double-Button-1>", on_double_click)
 
         def on_clear_history():
             global clipboard_history
             clipboard_history.clear()
-            save_history_to_file()  # Save the empty history
-            box.delete(0, tk.END)  # Remove items from the ListBox
+            save_history_to_file()
+            box.delete(0, tk.END)
+            entry_map.clear()
             print("🧹 Clipboard history cleared.")
 
+        ttk.Button(tk_window, text="Copy Selected", command=on_copy_selected).pack(pady=5)
         ttk.Button(tk_window, text="Clear History", command=on_clear_history).pack(pady=5)
         ttk.Button(tk_window, text="Close", command=tk_window.destroy).pack(pady=5)
 
