@@ -4,6 +4,7 @@ import pyperclip
 import os
 import sys
 import time
+import json
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -70,14 +71,23 @@ async def debug_clipboard(request: Request):
 def load_history_from_file():
     global clipboard_history
     if HISTORY_FILE.exists():
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            lines = [line.strip() for line in f.readlines() if line.strip()]
-            clipboard_history = lines[:HISTORY_LIMIT]
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                clipboard_history = json.load(f)
+                clipboard_history = clipboard_history[:HISTORY_LIMIT]
+        except Exception as e:
+            print(f"⚠️ Error loading history file: {e}")
+            clipboard_history = []
+
 
 def save_history_to_file():
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         for entry in clipboard_history[:HISTORY_LIMIT]:
             f.write(entry + "\n")
+
+def save_history_to_file():
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(clipboard_history[:HISTORY_LIMIT], f, ensure_ascii=False, indent=2)
 
 def add_to_history(text):
     global clipboard_history
