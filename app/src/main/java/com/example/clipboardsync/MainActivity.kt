@@ -1,5 +1,5 @@
 package com.example.clipboardsync
-import org.json.JSONObject // Add this import at the top
+
 import android.app.*
 import android.content.*
 import android.net.*
@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -17,30 +18,37 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import okhttp3.*
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.IOException
 
-// Composable UI
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     var lastText by remember { mutableStateOf("") }
+    var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
+    var history by remember { mutableStateOf(loadHistory(prefs)) }
 
-    var ipAddress by remember {
-        mutableStateOf(
-            context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                .getString("server_ip", "") ?: ""
-        )
-    }
-
-    // Save IP on change
     fun saveIp(ip: String) {
-        context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .edit().putString("server_ip", ip).apply()
+        prefs.edit().putString("server_ip", ip).apply()
     }
 
-    // Auto-discovery effect
+    fun addToHistory(text: String) {
+        val newHistory = listOf(text) + history.filterNot { it == text }
+        history = newHistory.take(20) // Keep max 20 entries
+        val json = JSONArray(newHistory)
+        prefs.edit().putString("clipboard_history", json.toString()).apply()
+    }
+
+    fun deleteFromHistory(item: String) {
+        history = history.filterNot { it == item }
+        val json = JSONArray(history)
+        prefs.edit().putString("clipboard_history", json.toString()).apply()
+    }
+
     LaunchedEffect(Unit) {
         discoverService(context) { ip ->
             ipAddress = ip
@@ -48,13 +56,13 @@ fun ClipboardSyncApp() {
         }
     }
 
-    // Clipboard auto-sync listener
     DisposableEffect(Unit) {
         val listener = ClipboardManager.OnPrimaryClipChangedListener {
             val clip = clipboardManager.primaryClip
             val text = clip?.getItemAt(0)?.text.toString()
-            if (text != lastText) {
+            if (text.isNotBlank() && text != lastText) {
                 lastText = text
+                addToHistory(text)
                 sendToServer(context, text, ipAddress)
             }
         }
@@ -64,11 +72,9 @@ fun ClipboardSyncApp() {
         }
     }
 
-    // UI
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         TextField(
             value = ipAddress,
@@ -81,33 +87,61 @@ fun ClipboardSyncApp() {
             modifier = Modifier.fillMaxWidth()
         )
 
-        Button(onClick = {
-            val clip = clipboardManager.primaryClip
-            val text = clip?.getItemAt(0)?.text.toString()
-            if (text != lastText) {
-                lastText = text
-                sendToServer(context, text, ipAddress)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                val clip = clipboardManager.primaryClip
+                val text = clip?.getItemAt(0)?.text.toString()
+                if (text != lastText) {
+                    lastText = text
+                    addToHistory(text)
+                    sendToServer(context, text, ipAddress)
+                }
+            }) {
+                Text("📤 Sync Clipboard Now")
             }
-        }) {
-            Text("📤 Sync Clipboard Now")
+
+            Button(onClick = {
+                fetchClipboardFromServer(context, ipAddress) { fetched ->
+                    if (fetched != null && fetched.isNotBlank()) {
+                        addToHistory(fetched)
+                    }
+                }
+            }) {
+                Text("📥 Fetch from PC")
+            }
         }
 
-        Button(onClick = {
-            fetchClipboardFromServer(context, ipAddress)
-        }) {
-            Text("📥 Fetch from PC")
+        Text("Clipboard History", fontSize = 16.sp)
+        LazyColumn {
+            items(history) { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(item, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { deleteFromHistory(item) }) {
+                        Text("🗑️")
+                    }
+                }
+            }
         }
-
-        Text("Last Copied: $lastText", fontSize = 14.sp)
     }
 }
 
-// Auto-discover FastAPI server using NSD
+fun loadHistory(prefs: SharedPreferences): List<String> {
+    val json = prefs.getString("clipboard_history", "[]")
+    return try {
+        val arr = JSONArray(json)
+        List(arr.length()) { i -> arr.getString(i) }
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
 fun discoverService(context: Context, onFound: (String) -> Unit) {
     val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     val serviceType = "_http._tcp."
     val serviceNamePrefix = "ClipboardSyncServer"
-
     lateinit var discoveryListener: NsdManager.DiscoveryListener
 
     discoveryListener = object : NsdManager.DiscoveryListener {
@@ -115,7 +149,6 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
         override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
         override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {}
         override fun onDiscoveryStopped(serviceType: String) {}
-
         override fun onServiceFound(serviceInfo: NsdServiceInfo) {
             if (serviceInfo.serviceName.contains(serviceNamePrefix)) {
                 nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
@@ -124,7 +157,6 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
                         val host = resolved.host.hostAddress
                         if (host != null) {
                             onFound(host)
-                            // ✅ Proper reference to stop discovery
                             nsdManager.stopServiceDiscovery(discoveryListener)
                         }
                     }
@@ -138,8 +170,6 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
-
-// Send clipboard to server
 fun sendToServer(context: Context, text: String, ip: String) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
@@ -169,8 +199,7 @@ fun sendToServer(context: Context, text: String, ip: String) {
     })
 }
 
-// Fetch clipboard from server
-fun fetchClipboardFromServer(context: Context, ip: String) {
+fun fetchClipboardFromServer(context: Context, ip: String, onFetched: (String?) -> Unit = {}) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
         return
@@ -183,6 +212,7 @@ fun fetchClipboardFromServer(context: Context, ip: String) {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
                 Toast.makeText(context, "❌ Failed to fetch: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                onFetched(null)
             }
         }
 
@@ -198,23 +228,25 @@ fun fetchClipboardFromServer(context: Context, ip: String) {
 
                         Handler(Looper.getMainLooper()).post {
                             Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
+                            onFetched(text)
                         }
                     }
                 } catch (e: Exception) {
                     Handler(Looper.getMainLooper()).post {
                         Toast.makeText(context, "⚠️ Parse error: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        onFetched(null)
                     }
                 }
             } else {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
+                    onFetched(null)
                 }
             }
         }
     })
 }
 
-// MainActivity
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
