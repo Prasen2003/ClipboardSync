@@ -24,6 +24,17 @@ import java.io.IOException
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import android.content.ClipData
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import kotlinx.coroutines.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 @Composable
 fun ClipboardSyncApp() {
@@ -34,6 +45,7 @@ fun ClipboardSyncApp() {
     var lastText by remember { mutableStateOf("") }
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
     var history by remember { mutableStateOf(loadHistory(prefs)) }
+    var isConnected by remember { mutableStateOf(false) }
 
     fun saveIp(ip: String) {
         prefs.edit().putString("server_ip", ip).apply()
@@ -52,6 +64,17 @@ fun ClipboardSyncApp() {
         prefs.edit().putString("clipboard_history", json.toString()).apply()
     }
 
+    // 🔁 Heartbeat ping
+    LaunchedEffect(ipAddress) {
+        while (true) {
+            pingServer(context, ipAddress) { success ->
+                isConnected = success
+            }
+            delay(5000)
+        }
+    }
+
+    // Discover service on first launch
     LaunchedEffect(Unit) {
         discoverService(context) { ip ->
             ipAddress = ip
@@ -64,6 +87,7 @@ fun ClipboardSyncApp() {
         }
     }
 
+    // Clipboard listener
     DisposableEffect(Unit) {
         val listener = ClipboardManager.OnPrimaryClipChangedListener {
             val clip = clipboardManager.primaryClip
@@ -113,6 +137,13 @@ fun ClipboardSyncApp() {
             }
         }
 
+        // ✅ Live connection status
+        Text(
+            text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
+            color = if (isConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            fontSize = 16.sp
+        )
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 val clip = clipboardManager.primaryClip
@@ -127,11 +158,11 @@ fun ClipboardSyncApp() {
             }
 
             Button(onClick = {
-                fetchClipboardFromServer(context, ipAddress) { fetched ->
-                    if (fetched != null && fetched.isNotBlank()) {
-                        addToHistory(fetched)
-                    }
-                }
+                fetchClipboardFromServer(
+                    context,
+                    ipAddress,
+                    onFetched = { if (!it.isNullOrBlank()) addToHistory(it) }
+                )
             }) {
                 Text("📥 Fetch from PC")
             }
@@ -171,9 +202,9 @@ fun ClipboardSyncApp() {
                 }
             }
         }
+
         if (selectedItem != null) {
             val scrollState = rememberScrollState()
-
             AlertDialog(
                 onDismissRequest = { selectedItem = null },
                 title = { Text("Clipboard Entry") },
@@ -184,10 +215,7 @@ fun ClipboardSyncApp() {
                             .verticalScroll(scrollState)
                             .padding(4.dp)
                     ) {
-                        Text(
-                            text = selectedItem!!,
-                            fontSize = 14.sp
-                        )
+                        Text(text = selectedItem!!, fontSize = 14.sp)
                     }
                 },
                 confirmButton = {
@@ -199,6 +227,32 @@ fun ClipboardSyncApp() {
         }
     }
 }
+
+fun pingServer(context: Context, ip: String, onResult: (Boolean) -> Unit) {
+    if (ip.isBlank()) {
+        onResult(false)
+        return
+    }
+
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val client = OkHttpClient.Builder()
+                .callTimeout(2, TimeUnit.SECONDS)
+                .build()
+
+            val request = Request.Builder()
+                .url("http://$ip:8000/ping")
+                .get()
+                .build()
+
+            val response = client.newCall(request).execute()
+            onResult(response.isSuccessful)
+        } catch (e: Exception) {
+            onResult(false)
+        }
+    }
+}
+
 
 fun loadHistory(prefs: SharedPreferences): List<String> {
     val json = prefs.getString("clipboard_history", "[]")
@@ -242,9 +296,10 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
-fun sendToServer(context: Context, text: String, ip: String) {
+fun sendToServer(context: Context, text: String, ip: String, onStatusChange: (Boolean) -> Unit = {}) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        onStatusChange(false)
         return
     }
 
@@ -255,25 +310,35 @@ fun sendToServer(context: Context, text: String, ip: String) {
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
+                onStatusChange(false) // Notify failure
                 Toast.makeText(context, "❌ Failed to sync: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
 
         override fun onResponse(call: Call, response: Response) {
             Handler(Looper.getMainLooper()).post {
-                Toast.makeText(
-                    context,
-                    if (response.isSuccessful) "✅ Clipboard synced" else "⚠️ Server error: ${response.code}",
-                    Toast.LENGTH_SHORT
-                ).show()
+                val isSuccess = response.isSuccessful
+                onStatusChange(isSuccess)  // Pass status as Boolean
+
+                if (isSuccess) {
+                    Toast.makeText(context, "✅ Clipboard synced", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     })
 }
 
-fun fetchClipboardFromServer(context: Context, ip: String, onFetched: (String?) -> Unit = {}) {
+fun fetchClipboardFromServer(
+    context: Context,
+    ip: String,
+    onFetched: (String?) -> Unit = {},
+    onStatusChange: (Boolean) -> Unit = {}
+) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        onStatusChange(false)
         return
     }
 
@@ -283,6 +348,7 @@ fun fetchClipboardFromServer(context: Context, ip: String, onFetched: (String?) 
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
+                onStatusChange(false) // Notify failure
                 Toast.makeText(context, "❌ Failed to fetch: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                 onFetched(null)
             }
@@ -290,27 +356,31 @@ fun fetchClipboardFromServer(context: Context, ip: String, onFetched: (String?) 
 
         override fun onResponse(call: Call, response: Response) {
             val result = response.body?.string()
-            if (response.isSuccessful && result != null) {
-                try {
-                    val text = JSONObject(result).getString("clipboard")
-                    if (text.isNotEmpty()) {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = ClipData.newPlainText("Synced", text)
-                        clipboard.setPrimaryClip(clip)
+            Handler(Looper.getMainLooper()).post {
+                val isSuccess = response.isSuccessful
+                onStatusChange(isSuccess) // Pass status as Boolean
 
-                        Handler(Looper.getMainLooper()).post {
+                if (isSuccess && !result.isNullOrBlank()) {
+                    try {
+                        val text = JSONObject(result).getString("clipboard")
+                        // Only apply isNotBlank() on a valid String
+                        if (text.isNotBlank()) {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("Synced", text)
+                            clipboard.setPrimaryClip(clip)
+
                             Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
                             onFetched(text)
+                        } else {
+                            // If fetched text is blank, notify failure
+                            onFetched(null)
                         }
-                    }
-                } catch (e: Exception) {
-                    Handler(Looper.getMainLooper()).post {
+                    } catch (e: Exception) {
                         Toast.makeText(context, "⚠️ Parse error: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                         onFetched(null)
                     }
-                }
-            } else {
-                Handler(Looper.getMainLooper()).post {
+                } else {
+                    // Server error response handling
                     Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
                     onFetched(null)
                 }
@@ -318,6 +388,7 @@ fun fetchClipboardFromServer(context: Context, ip: String, onFetched: (String?) 
         }
     })
 }
+
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

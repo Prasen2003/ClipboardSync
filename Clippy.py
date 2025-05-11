@@ -306,6 +306,10 @@ def monitor_ip_change():
             ip_changed = False
         time.sleep(debounce_time)
 
+@app.get("/ping")
+async def ping():
+    return {"status": "alive"}
+
 # === Main ===
 if __name__ == "__main__":
     load_history_from_file()  # Load history when app starts
