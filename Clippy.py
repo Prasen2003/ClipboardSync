@@ -14,8 +14,11 @@ from zeroconf import Zeroconf, ServiceInfo
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
-
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 # === Globals ===
+PASSWORD = "your_secure_password"
 zeroconf = Zeroconf()
 info = None
 tray_icon = None
@@ -43,29 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.api_route("/clipboard", methods=["GET", "POST", "PUT", "DELETE"])
-async def debug_clipboard(request: Request):
-    client_ip = request.client.host
-    connected_clients.add(client_ip)
-
-    print(f"📡 Received method: {request.method} from {client_ip}")
-    if request.method == "POST":
-        form = await request.form()
-        clipboard = form.get("clipboard", "")
-        print(f"📋 Received clipboard: {clipboard}")
-        pyperclip.copy(clipboard)
-
-        if clipboard.strip():
-            add_to_history(clipboard)
-
-        return {"status": "received", "clipboard": clipboard}
-    elif request.method == "GET":
-        clipboard = pyperclip.paste()
-        print(f"📤 Sending clipboard: {clipboard}")
-        return {"status": "sent", "clipboard": clipboard}
-    else:
-        return {"detail": "Only GET and POST supported"}
 
 # === Helper functions ===
 def load_history_from_file():
@@ -306,9 +286,35 @@ def monitor_ip_change():
             ip_changed = False
         time.sleep(debounce_time)
 
+def check_password(request: Request):
+    token = request.headers.get("X-Auth-Token")
+    if token != PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 @app.get("/ping")
-async def ping():
-    return {"status": "alive"}
+async def ping(request: Request):
+    check_password(request)
+    return {"status": "ok"}
+
+@app.get("/clipboard")
+async def get_clipboard(request: Request):
+    check_password(request)
+    clipboard = pyperclip.paste()
+    return {"status": "sent", "clipboard": clipboard}
+
+
+@app.post("/clipboard")
+async def set_clipboard(request: Request):
+    check_password(request)
+    form = await request.form()
+    clipboard = form.get("clipboard", "")
+    pyperclip.copy(clipboard)
+
+    if clipboard.strip():
+        add_to_history(clipboard)
+
+    return {"status": "received", "clipboard": clipboard}
+
 
 # === Main ===
 if __name__ == "__main__":

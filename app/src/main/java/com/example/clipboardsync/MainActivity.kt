@@ -46,7 +46,11 @@ fun ClipboardSyncApp() {
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
     var history by remember { mutableStateOf(loadHistory(prefs)) }
     var isConnected by remember { mutableStateOf(false) }
+    var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
 
+    fun savePassword(pass: String) {
+        prefs.edit().putString("server_password", pass).apply()
+    }
     fun saveIp(ip: String) {
         prefs.edit().putString("server_ip", ip).apply()
     }
@@ -67,7 +71,7 @@ fun ClipboardSyncApp() {
     // 🔁 Heartbeat ping
     LaunchedEffect(ipAddress) {
         while (true) {
-            pingServer(context, ipAddress) { success ->
+            pingServer(context, ipAddress, password) { success ->
                 isConnected = success
             }
             delay(5000)
@@ -95,7 +99,7 @@ fun ClipboardSyncApp() {
             if (text.isNotBlank() && text != lastText) {
                 lastText = text
                 addToHistory(text)
-                sendToServer(context, text, ipAddress)
+                sendToServer(context, text, ipAddress, password)
             }
         }
         clipboardManager.addPrimaryClipChangedListener(listener)
@@ -151,7 +155,7 @@ fun ClipboardSyncApp() {
                 if (text != lastText) {
                     lastText = text
                     addToHistory(text)
-                    sendToServer(context, text, ipAddress)
+                    sendToServer(context, text, ipAddress, password)
                 }
             }) {
                 Text("📤 Sync Clipboard Now")
@@ -167,7 +171,16 @@ fun ClipboardSyncApp() {
                 Text("📥 Fetch from PC")
             }
         }
-
+        TextField(
+            value = password,
+            onValueChange = {
+                password = it
+                savePassword(it)
+            },
+            label = { Text("Server Password") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
         Text("Clipboard History", fontSize = 16.sp)
 
         var selectedItem by remember { mutableStateOf<String?>(null) }
@@ -228,7 +241,7 @@ fun ClipboardSyncApp() {
     }
 }
 
-fun pingServer(context: Context, ip: String, onResult: (Boolean) -> Unit) {
+fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {
     if (ip.isBlank()) {
         onResult(false)
         return
@@ -243,6 +256,7 @@ fun pingServer(context: Context, ip: String, onResult: (Boolean) -> Unit) {
             val request = Request.Builder()
                 .url("http://$ip:8000/ping")
                 .get()
+                .addHeader("X-Auth-Token", password)
                 .build()
 
             val response = client.newCall(request).execute()
@@ -252,7 +266,6 @@ fun pingServer(context: Context, ip: String, onResult: (Boolean) -> Unit) {
         }
     }
 }
-
 
 fun loadHistory(prefs: SharedPreferences): List<String> {
     val json = prefs.getString("clipboard_history", "[]")
@@ -296,7 +309,8 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
-fun sendToServer(context: Context, text: String, ip: String, onStatusChange: (Boolean) -> Unit = {}) {
+fun sendToServer(context: Context, text: String, ip: String, password: String, onStatusChange: (Boolean) -> Unit = {})
+ {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
         onStatusChange(false)
@@ -305,7 +319,11 @@ fun sendToServer(context: Context, text: String, ip: String, onStatusChange: (Bo
 
     val client = OkHttpClient()
     val requestBody = FormBody.Builder().add("clipboard", text).build()
-    val request = Request.Builder().url("http://$ip:8000/clipboard").post(requestBody).build()
+    val request = Request.Builder()
+        .url("http://$ip:8000/clipboard")
+        .post(requestBody)
+        .addHeader("X-Auth-Token", password)
+        .build()
 
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
@@ -342,13 +360,20 @@ fun fetchClipboardFromServer(
         return
     }
 
+    val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    val password = prefs.getString("server_password", "") ?: ""
+
     val client = OkHttpClient()
-    val request = Request.Builder().url("http://$ip:8000/clipboard").get().build()
+    val request = Request.Builder()
+        .url("http://$ip:8000/clipboard")
+        .get()
+        .addHeader("X-Auth-Token", password) // ✅ Add this
+        .build()
 
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
-                onStatusChange(false) // Notify failure
+                onStatusChange(false)
                 Toast.makeText(context, "❌ Failed to fetch: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                 onFetched(null)
             }
@@ -358,12 +383,11 @@ fun fetchClipboardFromServer(
             val result = response.body?.string()
             Handler(Looper.getMainLooper()).post {
                 val isSuccess = response.isSuccessful
-                onStatusChange(isSuccess) // Pass status as Boolean
+                onStatusChange(isSuccess)
 
                 if (isSuccess && !result.isNullOrBlank()) {
                     try {
                         val text = JSONObject(result).getString("clipboard")
-                        // Only apply isNotBlank() on a valid String
                         if (text.isNotBlank()) {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             val clip = ClipData.newPlainText("Synced", text)
@@ -372,7 +396,6 @@ fun fetchClipboardFromServer(
                             Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
                             onFetched(text)
                         } else {
-                            // If fetched text is blank, notify failure
                             onFetched(null)
                         }
                     } catch (e: Exception) {
@@ -380,7 +403,6 @@ fun fetchClipboardFromServer(
                         onFetched(null)
                     }
                 } else {
-                    // Server error response handling
                     Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
                     onFetched(null)
                 }
@@ -388,7 +410,6 @@ fun fetchClipboardFromServer(
         }
     })
 }
-
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -414,7 +435,9 @@ class MainActivity : ComponentActivity() {
         val ip = getSharedPreferences("settings", Context.MODE_PRIVATE).getString("server_ip", "") ?: ""
 
         if (!text.isNullOrEmpty()) {
-            sendToServer(this, text, ip)
+            val password = getSharedPreferences("settings", Context.MODE_PRIVATE).getString("server_password", "") ?: ""
+            sendToServer(this, text, ip, password)
+
         } else {
             Toast.makeText(this, "📋 Clipboard is empty", Toast.LENGTH_SHORT).show()
         }
