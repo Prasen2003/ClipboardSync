@@ -17,8 +17,15 @@ from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File
+from fastapi import FastAPI, File, UploadFile, HTTPException, Header
+import re
+
+
 # === Globals ===
 PASSWORD = "your_secure_password"
+UPLOAD_DIR = Path("received_files")
+UPLOAD_DIR.mkdir(exist_ok=True)
 zeroconf = Zeroconf()
 info = None
 tray_icon = None
@@ -48,6 +55,11 @@ app.add_middleware(
 )
 
 # === Helper functions ===
+
+def sanitize_filename(filename: str) -> str:
+    # Remove characters invalid on Windows: \ / : * ? " < > |
+    return re.sub(r'[\\/*?:"<>|]', "_", filename)
+
 def load_history_from_file():
     global clipboard_history
     if HISTORY_FILE.exists():
@@ -315,6 +327,25 @@ async def set_clipboard(request: Request):
 
     return {"status": "received", "clipboard": clipboard}
 
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...), x_auth_token: str = Header(None)):
+    if x_auth_token != PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    save_path = Path("received_files")
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    safe_filename = sanitize_filename(file.filename or "uploaded_file")
+    file_path = save_path / safe_filename
+
+    content = await file.read()
+    print(f"📁 Saving file: {file_path}")
+    print(f"📦 Received size: {len(content)} bytes")
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    return {"status": "success", "filename": safe_filename}
 
 # === Main ===
 if __name__ == "__main__":

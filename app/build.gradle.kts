@@ -40,6 +40,8 @@ android {
 }
 
 dependencies {
+    implementation("androidx.activity:activity-ktx:1.8.0")
+
     implementation("org.json:json:20240303")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

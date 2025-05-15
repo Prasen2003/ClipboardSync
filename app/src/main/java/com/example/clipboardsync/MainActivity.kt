@@ -35,19 +35,31 @@ import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
-
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import java.io.File
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.asRequestBody
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+
     var lastText by remember { mutableStateOf("") }
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
     var history by remember { mutableStateOf(loadHistory(prefs)) }
     var isConnected by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
-
+    val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let {
+            uploadFileToServer(context, it, ipAddress, password)
+        }
+    }
     fun savePassword(pass: String) {
         prefs.edit().putString("server_password", pass).apply()
     }
@@ -170,6 +182,11 @@ fun ClipboardSyncApp() {
             }) {
                 Text("📥 Fetch from PC")
             }
+        }
+        Button(onClick = {
+            fileLauncher.launch("*/*") // any file type
+        }) {
+            Text("📁 Send File")
         }
         TextField(
             value = password,
@@ -309,6 +326,52 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
+fun uploadFileToServer(context: Context, uri: Uri, ip: String, password: String) {
+    if (ip.isBlank()) {
+        Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val contentResolver = context.contentResolver
+    val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "uploaded_file"
+    val inputStream = contentResolver.openInputStream(uri) ?: return
+
+    val tempFile = File.createTempFile("upload", fileName, context.cacheDir)
+    inputStream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
+
+    val fileBody = tempFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
+    val multipartBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart("file", fileName, fileBody)
+        .build()
+
+    val request = Request.Builder()
+        .url("http://$ip:8000/upload")
+        .post(multipartBody)
+        .addHeader("X-Auth-Token", password)
+        .build()
+
+    val client = OkHttpClient()
+
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "❌ Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            Handler(Looper.getMainLooper()).post {
+                if (response.isSuccessful) {
+                    Toast.makeText(context, "✅ File uploaded successfully", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "⚠️ Upload failed: ${response.code}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    })
+}
+
 fun sendToServer(context: Context, text: String, ip: String, password: String, onStatusChange: (Boolean) -> Unit = {})
  {
     if (ip.isBlank()) {
@@ -367,7 +430,7 @@ fun fetchClipboardFromServer(
     val request = Request.Builder()
         .url("http://$ip:8000/clipboard")
         .get()
-        .addHeader("X-Auth-Token", password) // ✅ Add this
+        .addHeader("X-Auth-Token", password)
         .build()
 
     client.newCall(request).enqueue(object : Callback {
@@ -390,20 +453,20 @@ fun fetchClipboardFromServer(
                         val text = JSONObject(result).getString("clipboard")
                         if (text.isNotBlank()) {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clip = ClipData.newPlainText("Synced", text)
+                            val clip = ClipData.newPlainText("Clipboard", text)
                             clipboard.setPrimaryClip(clip)
-
-                            Toast.makeText(context, "✅ Clipboard fetched", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "📥 Clipboard updated", Toast.LENGTH_SHORT).show()
                             onFetched(text)
                         } else {
+                            Toast.makeText(context, "⚠️ Empty clipboard data", Toast.LENGTH_SHORT).show()
                             onFetched(null)
                         }
                     } catch (e: Exception) {
-                        Toast.makeText(context, "⚠️ Parse error: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "⚠️ Parse error", Toast.LENGTH_SHORT).show()
                         onFetched(null)
                     }
                 } else {
-                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_SHORT).show()
                     onFetched(null)
                 }
             }
