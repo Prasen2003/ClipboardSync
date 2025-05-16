@@ -43,6 +43,8 @@ import android.os.Looper
 import java.io.File
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.asRequestBody
+import android.webkit.MimeTypeMap
+
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -333,10 +335,21 @@ fun uploadFileToServer(context: Context, uri: Uri, ip: String, password: String)
     }
 
     val contentResolver = context.contentResolver
-    val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "uploaded_file"
-    val inputStream = contentResolver.openInputStream(uri) ?: return
 
-    val tempFile = File.createTempFile("upload", fileName, context.cacheDir)
+    // Step 1: Get MIME type and map to extension
+    val mimeType = contentResolver.getType(uri)
+    val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "bin"
+
+    // Step 2: Try to get the original filename or fallback
+    var fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "upload"
+
+    // Step 3: Ensure filename has correct extension
+    if (!fileName.contains('.')) {
+        fileName += ".$extension"
+    }
+
+    val inputStream = contentResolver.openInputStream(uri) ?: return
+    val tempFile = File.createTempFile("upload", null, context.cacheDir)
     inputStream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
 
     val fileBody = tempFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
