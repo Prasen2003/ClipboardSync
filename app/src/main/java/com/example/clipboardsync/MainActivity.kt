@@ -51,6 +51,7 @@ fun ClipboardSyncApp() {
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    var isUploading by remember { mutableStateOf(false) }
 
     var lastText by remember { mutableStateOf("") }
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
@@ -59,7 +60,9 @@ fun ClipboardSyncApp() {
     var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
-            uploadFileToServer(context, it, ipAddress, password)
+            uploadFileToServer(context, it, ipAddress, password) { uploading ->
+                isUploading = uploading
+            }
         }
     }
     fun savePassword(pass: String) {
@@ -185,10 +188,16 @@ fun ClipboardSyncApp() {
                 Text("📥 Fetch from PC")
             }
         }
-        Button(onClick = {
-            fileLauncher.launch("*/*") // any file type
-        }) {
-            Text("📁 Send File")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = {
+                fileLauncher.launch("*/*") // any file type
+            }) {
+                Text("📁 Send File")
+            }
+            if (isUploading) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Uploading...", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+            }
         }
         TextField(
             value = password,
@@ -328,12 +337,16 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
-fun uploadFileToServer(context: Context, uri: Uri, ip: String, password: String) {
+fun uploadFileToServer(context: Context,
+                       uri: Uri,
+                       ip: String,
+                       password: String,
+                       onUploadingChanged: (Boolean) -> Unit) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
         return
     }
-
+    onUploadingChanged(true)
     val contentResolver = context.contentResolver
 
     // Step 1: Get MIME type and map to extension
@@ -370,6 +383,7 @@ fun uploadFileToServer(context: Context, uri: Uri, ip: String, password: String)
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
                 Toast.makeText(context, "❌ Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+                onUploadingChanged(false) // Upload ended with failure
             }
         }
 
@@ -380,6 +394,7 @@ fun uploadFileToServer(context: Context, uri: Uri, ip: String, password: String)
                 } else {
                     Toast.makeText(context, "⚠️ Upload failed: ${response.code}", Toast.LENGTH_SHORT).show()
                 }
+                onUploadingChanged(false) // Upload ended (success or failure)
             }
         }
     })
