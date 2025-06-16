@@ -52,7 +52,12 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-
+import android.content.ContentValues
+import android.os.Build
+import android.provider.MediaStore
+import java.io.InputStream
+import java.net.URLConnection
+import android.os.Environment
 
 @Composable
 fun ClipboardSyncApp() {
@@ -594,6 +599,50 @@ fun fetchFileListFromServer(
     })
 }
 
+fun saveFileToDownloads(
+    context: Context,
+    filename: String,
+    mimeType: String,
+    inputStream: InputStream,
+    size: Long
+): String? {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // API 29+
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val fileUri = resolver.insert(collection, values)
+
+        if (fileUri != null) {
+            resolver.openOutputStream(fileUri)?.use { output ->
+                inputStream.copyTo(output)
+            }
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(fileUri, values, null, null)
+            return fileUri.toString()
+        } else {
+            null
+        }
+    } else {
+        // Below API 29
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!downloadsDir.exists()) downloadsDir.mkdirs()
+        val file = File(downloadsDir, filename)
+        inputStream.use { input ->
+            file.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        return file.absolutePath
+    }
+}
+
 fun downloadFileFromServer(
     context: Context,
     filename: String,
@@ -605,14 +654,10 @@ fun downloadFileFromServer(
         return
     }
 
-    val client = OkHttpClient.Builder()
-        .cache(null)  // Disable cache
-        .build()
-
+    val client = OkHttpClient()
     val request = Request.Builder()
         .url("http://$ip:8000/download/$filename")
         .addHeader("X-Auth-Token", password)
-        .addHeader("Cache-Control", "no-cache")
         .build()
 
     client.newCall(request).enqueue(object : Callback {
@@ -623,34 +668,98 @@ fun downloadFileFromServer(
         }
 
         override fun onResponse(call: Call, response: Response) {
-            if (!response.isSuccessful) {
+            if (!response.isSuccessful || response.body == null) {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
                 }
                 return
             }
 
-            val inputStream = response.body?.byteStream()
-            val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
-            val outFile = File(downloadsDir, filename)
+            val inputStream = response.body!!.byteStream()
 
-            // Delete old file if it exists (even if partially)
-            if (outFile.exists()) outFile.delete()
+            // Detect MIME type from filename
+            val mimeType = URLConnection.guessContentTypeFromName(filename)
+                ?: "application/octet-stream"
 
-            inputStream?.use { input ->
-                outFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
+            val fileSize = response.body!!.contentLength()
+
+            val savedPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveToDownloadsQAndAbove(context, filename, mimeType, inputStream, fileSize)
+            } else {
+                saveToDownloadsLegacy(context, filename, inputStream)
             }
 
             Handler(Looper.getMainLooper()).post {
-                Toast.makeText(context, "✅ Downloaded to: ${outFile.absolutePath}", Toast.LENGTH_LONG).show()
+                if (savedPath != null) {
+                    Toast.makeText(context, "✅ Downloaded to: $savedPath", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
+                }
             }
         }
     })
 }
 
+private fun saveToDownloadsQAndAbove(
+    context: Context,
+    filename: String,
+    mimeType: String,
+    inputStream: java.io.InputStream,
+    size: Long
+): String? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
 
+    val contentValues = ContentValues().apply {
+        put(MediaStore.Downloads.DISPLAY_NAME, filename)
+        put(MediaStore.Downloads.MIME_TYPE, mimeType)
+        put(MediaStore.Downloads.IS_PENDING, 1)
+        put(MediaStore.Downloads.SIZE, size)
+    }
+
+    val resolver = context.contentResolver
+    val downloadsUri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    val fileUri: Uri? = resolver.insert(downloadsUri, contentValues)
+
+    if (fileUri != null) {
+        try {
+            resolver.openOutputStream(fileUri)?.use { output ->
+                inputStream.copyTo(output)
+            }
+            contentValues.clear()
+            contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(fileUri, contentValues, null, null)
+            return fileUri.toString()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    return null
+}
+
+
+private fun saveToDownloadsLegacy(
+    context: Context,
+    filename: String,
+    inputStream: java.io.InputStream
+): String? {
+    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+    if (!downloadsDir.exists()) downloadsDir.mkdirs()
+
+    val outFile = File(downloadsDir, filename)
+
+    return try {
+        inputStream.use { input ->
+            outFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        outFile.absolutePath
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
 fun sendToServer(context: Context, text: String, ip: String, password: String, onStatusChange: (Boolean) -> Unit = {})
  {
     if (ip.isBlank()) {
