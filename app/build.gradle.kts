@@ -40,6 +40,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.compose.material:material-icons-extended:1.6.1") // or your Compose version
     implementation("androidx.activity:activity-ktx:1.8.0")
     implementation("androidx.compose.material3:material3:1.2.0") // or latest stable
     implementation("org.json:json:20240303")

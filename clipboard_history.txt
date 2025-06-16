@@ -1,4 +1,5 @@
 [
+  "python compiler",
   "n = 5\na=[0,1]\nfor i in range(n):\n    a.append((a[-1]+a[-2]))\nprint(a)\n",
   "s = \"madam\"\nis_palindrome = s == s[::-1]\nprint(is_palindrome)  # Output: True",
   "We got gay swans before GTA 6",
