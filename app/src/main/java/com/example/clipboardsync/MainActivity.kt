@@ -605,10 +605,14 @@ fun downloadFileFromServer(
         return
     }
 
-    val client = OkHttpClient()
+    val client = OkHttpClient.Builder()
+        .cache(null)  // Disable cache
+        .build()
+
     val request = Request.Builder()
         .url("http://$ip:8000/download/$filename")
         .addHeader("X-Auth-Token", password)
+        .addHeader("Cache-Control", "no-cache")
         .build()
 
     client.newCall(request).enqueue(object : Callback {
@@ -627,12 +631,11 @@ fun downloadFileFromServer(
             }
 
             val inputStream = response.body?.byteStream()
-            val fileNameHeader = response.header("Content-Disposition") ?: "downloaded_file"
-            val fileName = filename  // Or extract from header
+            val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
+            val outFile = File(downloadsDir, filename)
 
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-
-            val outFile = File(downloadsDir, fileName)
+            // Delete old file if it exists (even if partially)
+            if (outFile.exists()) outFile.delete()
 
             inputStream?.use { input ->
                 outFile.outputStream().use { output ->
@@ -646,6 +649,7 @@ fun downloadFileFromServer(
         }
     })
 }
+
 
 fun sendToServer(context: Context, text: String, ip: String, password: String, onStatusChange: (Boolean) -> Unit = {})
  {
