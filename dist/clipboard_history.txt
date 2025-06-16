@@ -1,5 +1,7 @@
 [
-  "IoT Gesture System (Ultrasonic Sensors)  Developed a gesture-based control system using Arduino ultrasonic sensors and Python.  Implemented real-time distance sensing with noise handling and timeout safety.  Built a Tkinter GUI to simulate keyboard inputs (e.g., media control, custom inputs).  Enabled customizable key bindings, sensor toggles, and profile switching.  Used moving average filtering and serial communication for smooth, accurate gesture detection. ",
+  "Google",
+  "offered",
   "Google offered ",
-  "n = 5\na=[0,1]\nfor i in range(n):\n    a.append((a[-1]+a[-2]))\nprint(a)\n"
+  "n = 5\na=[0,1]\nfor i in range(n):\n    a.append((a[-1]+a[-2]))\nprint(a)\n",
+  "IoT Gesture System (Ultrasonic Sensors)  Developed a gesture-based control system using Arduino ultrasonic sensors and Python.  Implemented real-time distance sensing with noise handling and timeout safety.  Built a Tkinter GUI to simulate keyboard inputs (e.g., media control, custom inputs).  Enabled customizable key bindings, sensor toggles, and profile switching.  Used moving average filtering and serial communication for smooth, accurate gesture detection. "
 ]

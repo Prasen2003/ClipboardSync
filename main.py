@@ -21,7 +21,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File
 from fastapi import FastAPI, File, UploadFile, HTTPException, Header
 import re
-
+import ctypes
+import win32con
+import win32gui
+import win32process
 
 # === Globals ===
 PASSWORD = "your_secure_password"
@@ -44,6 +47,7 @@ HISTORY_LIMIT = 20
 HISTORY_FILE = Path("clipboard_history.txt")
 tk_window = None
 root = None  # Tkinter root
+CONFIG_FILE = "config.json"
 
 # === FastAPI server ===
 app = FastAPI()
@@ -56,6 +60,24 @@ app.add_middleware(
 )
 
 # === Helper functions ===
+def load_config():
+    global PASSWORD
+    try:
+        if Path(CONFIG_FILE).exists():
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                PASSWORD = config.get("password", PASSWORD)
+                print("🔐 Loaded password from config.")
+    except Exception as e:
+        print(f"⚠️ Failed to load config: {e}")
+
+def save_config():
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"password": PASSWORD}, f, indent=2)
+            print("✅ Password saved to config.")
+    except Exception as e:
+        print(f"⚠️ Failed to save config: {e}")
 
 def sanitize_filename(filename: str) -> str:
     # Remove characters invalid on Windows: \ / : * ? " < > |
@@ -254,8 +276,8 @@ def create_tray_menu(ip=None):
     ip = ip or get_ip()
     return Menu(
         MenuItem("Open Received Files", open_received_files_folder),
-        MenuItem("Show Connections", show_connections),
         MenuItem("Clipboard History", show_clipboard_history),
+        MenuItem("Set Password", show_set_password_window),
         MenuItem("Restart", on_restart),
         MenuItem("Quit", on_quit),
         MenuItem(f"IP Address: {ip}", lambda *_: None, enabled=False)
@@ -365,11 +387,43 @@ def open_received_files_folder(icon, item):
     except Exception as e:
         print(f"⚠️ Could not open folder: {e}")
 
+def minimize_console_window():
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if hwnd:
+        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+
+def show_set_password_window(icon=None, item=None):
+    def save_new_password():
+        global PASSWORD
+        new_pass = entry.get().strip()
+        if new_pass:
+            PASSWORD = new_pass
+            save_config()
+            print("🔐 Password updated.")
+            win.destroy()
+
+    global tk_window
+    if tk_window and tk_window.winfo_exists():
+        tk_window.lift()
+        return
+
+    win = tk.Toplevel(root)
+    win.title("Set Server Password")
+    win.geometry("300x150")
+    win.resizable(False, False)
+
+    ttk.Label(win, text="Enter new password:", font=("Segoe UI", 11)).pack(pady=10)
+    entry = ttk.Entry(win, show="*", font=("Segoe UI", 11))
+    entry.pack(pady=5, padx=20, fill="x")
+    entry.insert(0, PASSWORD)
+
+    ttk.Button(win, text="Save", command=save_new_password).pack(pady=10)
 
 # === Main ===
 if __name__ == "__main__":
+    minimize_console_window()
     load_history_from_file()  # Load history when app starts
-
+    load_config()
     root = tk.Tk()
     root.withdraw()  # Hide root window
 
