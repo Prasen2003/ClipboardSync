@@ -402,6 +402,12 @@ def show_set_password_window(icon=None, item=None):
             print("🔐 Password updated.")
             win.destroy()
 
+    def toggle_password_visibility():
+        if show_var.get():
+            entry.config(show="")
+        else:
+            entry.config(show="*")
+
     global tk_window
     if tk_window and tk_window.winfo_exists():
         tk_window.lift()
@@ -409,13 +415,18 @@ def show_set_password_window(icon=None, item=None):
 
     win = tk.Toplevel(root)
     win.title("Set Server Password")
-    win.geometry("300x150")
+    win.geometry("300x180")
     win.resizable(False, False)
 
-    ttk.Label(win, text="Enter new password:", font=("Segoe UI", 11)).pack(pady=10)
+    ttk.Label(win, text="Enter new password:", font=("Segoe UI", 11)).pack(pady=(10, 5))
+    
     entry = ttk.Entry(win, show="*", font=("Segoe UI", 11))
     entry.pack(pady=5, padx=20, fill="x")
     entry.insert(0, PASSWORD)
+
+    show_var = tk.BooleanVar(value=False)
+    show_checkbox = ttk.Checkbutton(win, text="Show Password", variable=show_var, command=toggle_password_visibility)
+    show_checkbox.pack(pady=(0, 10))
 
     ttk.Button(win, text="Save", command=save_new_password).pack(pady=10)
 
