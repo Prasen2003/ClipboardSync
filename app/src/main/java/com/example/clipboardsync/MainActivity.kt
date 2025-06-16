@@ -47,7 +47,6 @@ fun ClipboardSyncApp() {
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-    // Replace single boolean with counter for concurrent uploads
     var uploadingCount by remember { mutableStateOf(0) }
     val isUploading = uploadingCount > 0
 
@@ -60,7 +59,6 @@ fun ClipboardSyncApp() {
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             uploadFileToServer(context, it, ipAddress, password) { uploading ->
-                // Update counter safely
                 uploadingCount = when {
                     uploading -> uploadingCount + 1
                     uploadingCount > 0 -> uploadingCount - 1
@@ -70,55 +68,43 @@ fun ClipboardSyncApp() {
         }
     }
 
-    fun savePassword(pass: String) {
-        prefs.edit().putString("server_password", pass).apply()
-    }
-
-    fun saveIp(ip: String) {
-        prefs.edit().putString("server_ip", ip).apply()
-    }
+    fun savePassword(pass: String) = prefs.edit().putString("server_password", pass).apply()
+    fun saveIp(ip: String) = prefs.edit().putString("server_ip", ip).apply()
 
     fun addToHistory(text: String) {
         val newHistory = listOf(text) + history.filterNot { it == text }
         history = newHistory.take(20)
-        val json = JSONArray(newHistory)
-        prefs.edit().putString("clipboard_history", json.toString()).apply()
+        prefs.edit().putString("clipboard_history", JSONArray(newHistory).toString()).apply()
     }
 
     fun deleteFromHistory(item: String) {
         history = history.filterNot { it == item }
-        val json = JSONArray(history)
-        prefs.edit().putString("clipboard_history", json.toString()).apply()
+        prefs.edit().putString("clipboard_history", JSONArray(history).toString()).apply()
     }
 
-    // 🔁 Heartbeat ping
     LaunchedEffect(ipAddress) {
         while (true) {
-            pingServer(context, ipAddress, password) { success ->
-                isConnected = success
-            }
+            pingServer(context, ipAddress, password) { isConnected = it }
             delay(5000)
         }
     }
 
-    // Discover service on first launch
     LaunchedEffect(Unit) {
-        discoverService(context) { ip ->
-            ipAddress = ip
-            saveIp(ip)
+        discoverService(context) {
+            ipAddress = it
+            saveIp(it)
         }
-        val initialText = clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()
-        if (!initialText.isNullOrBlank()) {
-            lastText = initialText
-            addToHistory(initialText)
+        clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()?.let {
+            if (it.isNotBlank()) {
+                lastText = it
+                addToHistory(it)
+            }
         }
     }
 
-    // Clipboard listener
     DisposableEffect(Unit) {
         val listener = ClipboardManager.OnPrimaryClipChangedListener {
-            val clip = clipboardManager.primaryClip
-            val text = clip?.getItemAt(0)?.text.toString()
+            val text = clipboardManager.primaryClip?.getItemAt(0)?.text.toString()
             if (text.isNotBlank() && text != lastText) {
                 lastText = text
                 addToHistory(text)
@@ -126,18 +112,19 @@ fun ClipboardSyncApp() {
             }
         }
         clipboardManager.addPrimaryClipChangedListener(listener)
-        onDispose {
-            clipboardManager.removePrimaryClipChangedListener(listener)
-        }
+        onDispose { clipboardManager.removePrimaryClipChangedListener(listener) }
     }
+
+    var selectedItem by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. IP Address + Refresh Button
+
+        Text("Connection Settings", fontSize = 18.sp)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -153,19 +140,17 @@ fun ClipboardSyncApp() {
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
-
             Button(onClick = {
-                discoverService(context) { ip ->
-                    ipAddress = ip
-                    saveIp(ip)
-                    Toast.makeText(context, "🔄 IP updated to $ip", Toast.LENGTH_SHORT).show()
+                discoverService(context) {
+                    ipAddress = it
+                    saveIp(it)
+                    Toast.makeText(context, "🔄 IP updated to $it", Toast.LENGTH_SHORT).show()
                 }
             }) {
                 Text("🔄")
             }
         }
 
-        // 2. Server Password
         TextField(
             value = password,
             onValueChange = {
@@ -177,26 +162,29 @@ fun ClipboardSyncApp() {
             modifier = Modifier.fillMaxWidth()
         )
 
-        // 3. Connection Status
         Text(
             text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
             color = if (isConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-            fontSize = 16.sp
+            fontSize = 16.sp,
+            modifier = Modifier.padding(top = 4.dp)
         )
 
-        // 4. Sync and Fetch Buttons
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text("Clipboard Actions", fontSize = 18.sp)
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Button(
                 onClick = {
-                    val clip = clipboardManager.primaryClip
-                    val text = clip?.getItemAt(0)?.text.toString()
-                    if (text != lastText) {
-                        lastText = text
-                        addToHistory(text)
-                        sendToServer(context, text, ipAddress, password)
+                    clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()?.let { text ->
+                        if (text != lastText) {
+                            lastText = text
+                            addToHistory(text)
+                            sendToServer(context, text, ipAddress, password)
+                        }
                     }
                 },
                 modifier = Modifier.weight(1f)
@@ -218,7 +206,6 @@ fun ClipboardSyncApp() {
             }
         }
 
-        // 5. Send File and Uploading Status
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -235,17 +222,16 @@ fun ClipboardSyncApp() {
             }
         }
 
-        // 6. Clipboard History
-        Text("Clipboard History", fontSize = 16.sp)
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
 
-        var selectedItem by remember { mutableStateOf<String?>(null) }
+        Text("Clipboard History", fontSize = 18.sp)
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(history) { item ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp)
+                        .padding(vertical = 6.dp)
                         .clickable { selectedItem = item },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
@@ -270,33 +256,33 @@ fun ClipboardSyncApp() {
                 }
             }
         }
-
-        // Optional: Expanded item preview
-        if (selectedItem != null) {
-            val scrollState = rememberScrollState()
-            AlertDialog(
-                onDismissRequest = { selectedItem = null },
-                title = { Text("Clipboard Entry") },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .heightIn(min = 100.dp, max = 400.dp)
-                            .verticalScroll(scrollState)
-                            .padding(4.dp)
-                    ) {
-                        Text(text = selectedItem!!, fontSize = 14.sp)
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { selectedItem = null }) {
-                        Text("Close")
-                    }
-                }
-            )
-        }
     }
 
+    // Expanded History View Dialog
+    selectedItem?.let {
+        val scrollState = rememberScrollState()
+        AlertDialog(
+            onDismissRequest = { selectedItem = null },
+            title = { Text("Clipboard Entry") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(min = 100.dp, max = 400.dp)
+                        .verticalScroll(scrollState)
+                        .padding(4.dp)
+                ) {
+                    Text(it, fontSize = 14.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { selectedItem = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
 }
+
 
 fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {
     if (ip.isBlank()) {
