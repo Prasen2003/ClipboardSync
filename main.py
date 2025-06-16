@@ -25,6 +25,7 @@ import ctypes
 import win32con
 import win32gui
 import win32process
+from fastapi.responses import FileResponse
 
 # === Globals ===
 PASSWORD = "your_secure_password"
@@ -378,6 +379,28 @@ async def upload_file(file: UploadFile = File(...), x_auth_token: str = Header(N
         f.write(content)
 
     return {"status": "success", "filename": safe_filename}
+
+@app.get("/list-files")
+def list_files(x_auth_token: str = Header(None)):
+    if x_auth_token != PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    if not os.path.isdir(UPLOAD_DIR):
+        return JSONResponse(content={"files": []})
+
+    files = os.listdir(UPLOAD_DIR)
+    return {"files": files}
+
+@app.get("/download/{filename}")
+def download_file(filename: str, x_auth_token: str = Header(None)):
+    if x_auth_token != PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(file_path, media_type='application/octet-stream', filename=filename)
 
 def open_received_files_folder(icon, item):
     folder_path = str(UPLOAD_DIR.resolve())

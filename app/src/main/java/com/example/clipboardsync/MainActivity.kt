@@ -68,6 +68,7 @@ fun ClipboardSyncApp() {
     var history by remember { mutableStateOf(loadHistory(prefs)) }
     var isConnected by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
+    var availableFiles by remember { mutableStateOf<List<String>>(emptyList()) }
 
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -279,17 +280,40 @@ fun ClipboardSyncApp() {
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Button(
-                onClick = { fileLauncher.launch("*/*") },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(0.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = buttonColor,
-                    contentColor = buttonTextColor
-                )
-            ) {
-                Text("📁 Send File")
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { fileLauncher.launch("*/*") },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 4.dp), // add spacing on the end (right)
+                    shape = RoundedCornerShape(0.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = buttonColor,
+                        contentColor = buttonTextColor
+                    )
+                ) {
+                    Text("📁 Send File")
+                }
+
+                Button(
+                    onClick = {
+                        fetchFileListFromServer(context, ipAddress, password) { files ->
+                            availableFiles = files
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 4.dp), // add spacing on the start (left)
+                    shape = RoundedCornerShape(0.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = buttonColor,
+                        contentColor = buttonTextColor
+                    )
+                ) {
+                    Text("📃 Fetch Files")
+                }
             }
+
 
             if (isUploading) {
                 Spacer(modifier = Modifier.width(8.dp))
@@ -298,10 +322,36 @@ fun ClipboardSyncApp() {
         }
 
         Divider(color = Color.Gray)
+        
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 8.dp)
+        ) {
+            item {
+                Text("Available Files", fontSize = 18.sp, color = Color.White)
+            }
 
-        Text("Clipboard History", fontSize = 18.sp, color = Color.White)
+            items(availableFiles) { file ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            downloadFileFromServer(context, file, ipAddress, password)
+                        }
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(file, color = Color.White)
+                }
+            }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Clipboard History", fontSize = 18.sp, color = Color.White)
+            }
+
             items(history) { item ->
                 Row(
                     modifier = Modifier
@@ -321,7 +371,8 @@ fun ClipboardSyncApp() {
                         IconButton(onClick = {
                             val clip = ClipData.newPlainText("Copied", item)
                             clipboardManager.setPrimaryClip(clip)
-                            Toast.makeText(context, "📋 Copied to clipboard", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "📋 Copied to clipboard", Toast.LENGTH_SHORT)
+                                .show()
                         }) {
                             Text("📋", color = Color.White)
                         }
@@ -334,7 +385,7 @@ fun ClipboardSyncApp() {
         }
     }
 
-    // Expanded History View Dialog
+        // Expanded History View Dialog
     selectedItem?.let {
         val scrollState = rememberScrollState()
         AlertDialog(
@@ -488,6 +539,109 @@ fun uploadFileToServer(context: Context,
                     Toast.makeText(context, "⚠️ Upload failed: ${response.code}", Toast.LENGTH_SHORT).show()
                 }
                 onUploadingChanged(false) // Upload ended (success or failure)
+            }
+        }
+    })
+}
+fun fetchFileListFromServer(
+    context: Context,
+    ip: String,
+    password: String,
+    onResult: (List<String>) -> Unit
+) {
+    if (ip.isBlank()) {
+        Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        onResult(emptyList())
+        return
+    }
+
+    val client = OkHttpClient()
+    val request = Request.Builder()
+        .url("http://$ip:8000/list-files")
+        .addHeader("X-Auth-Token", password)
+        .build()
+
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "❌ Failed to get file list", Toast.LENGTH_SHORT).show()
+                onResult(emptyList())
+            }
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (!response.isSuccessful) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_SHORT).show()
+                    onResult(emptyList())
+                }
+                return
+            }
+
+            val body = response.body?.string()
+            val fileList = try {
+                val json = JSONObject(body ?: "{}")
+                val filesArray = json.getJSONArray("files")
+                List(filesArray.length()) { i -> filesArray.getString(i) }
+            } catch (e: Exception) {
+                emptyList()
+            }
+
+            Handler(Looper.getMainLooper()).post {
+                onResult(fileList)
+            }
+        }
+    })
+}
+
+fun downloadFileFromServer(
+    context: Context,
+    filename: String,
+    ip: String,
+    password: String
+) {
+    if (ip.isBlank()) {
+        Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val client = OkHttpClient()
+    val request = Request.Builder()
+        .url("http://$ip:8000/download/$filename")
+        .addHeader("X-Auth-Token", password)
+        .build()
+
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (!response.isSuccessful) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
+                }
+                return
+            }
+
+            val inputStream = response.body?.byteStream()
+            val fileNameHeader = response.header("Content-Disposition") ?: "downloaded_file"
+            val fileName = filename  // Or extract from header
+
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+
+            val outFile = File(downloadsDir, fileName)
+
+            inputStream?.use { input ->
+                outFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "✅ Downloaded to: ${outFile.absolutePath}", Toast.LENGTH_LONG).show()
             }
         }
     })
