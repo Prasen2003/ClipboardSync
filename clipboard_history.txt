@@ -1,0 +1,6 @@
+[
+  "n = 5\na=[0,1]\nfor i in range(n):\n    a.append((a[-1]+a[-2]))\nprint(a)\n",
+  "s = \"madam\"\nis_palindrome = s == s[::-1]\nprint(is_palindrome)  # Output: True",
+  "We got gay swans before GTA 6",
+  "Welcome to  Adobe Acrobat Here are five tips to get real work  done from anywhere with Acrobat.  01 Work where you want 02 Meet Acrobat AI Assistant 03 Present perfect content 04 Share files with others 05 Get help from Adobe "
+]

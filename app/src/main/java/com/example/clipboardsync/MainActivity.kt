@@ -1,8 +1,6 @@
 package com.example.clipboardsync
 
-import android.app.*
 import android.content.*
-import android.net.*
 import android.net.nsd.*
 import android.os.*
 import android.provider.Settings
@@ -10,10 +8,8 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,23 +47,33 @@ fun ClipboardSyncApp() {
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-    var isUploading by remember { mutableStateOf(false) }
+    // Replace single boolean with counter for concurrent uploads
+    var uploadingCount by remember { mutableStateOf(0) }
+    val isUploading = uploadingCount > 0
 
     var lastText by remember { mutableStateOf("") }
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
     var history by remember { mutableStateOf(loadHistory(prefs)) }
     var isConnected by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
+
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             uploadFileToServer(context, it, ipAddress, password) { uploading ->
-                isUploading = uploading
+                // Update counter safely
+                uploadingCount = when {
+                    uploading -> uploadingCount + 1
+                    uploadingCount > 0 -> uploadingCount - 1
+                    else -> 0
+                }
             }
         }
     }
+
     fun savePassword(pass: String) {
         prefs.edit().putString("server_password", pass).apply()
     }
+
     fun saveIp(ip: String) {
         prefs.edit().putString("server_ip", ip).apply()
     }
@@ -131,6 +137,7 @@ fun ClipboardSyncApp() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // 1. IP Address + Refresh Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -158,47 +165,7 @@ fun ClipboardSyncApp() {
             }
         }
 
-        // ✅ Live connection status
-        Text(
-            text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
-            color = if (isConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-            fontSize = 16.sp
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                val clip = clipboardManager.primaryClip
-                val text = clip?.getItemAt(0)?.text.toString()
-                if (text != lastText) {
-                    lastText = text
-                    addToHistory(text)
-                    sendToServer(context, text, ipAddress, password)
-                }
-            }) {
-                Text("📤 Sync Clipboard Now")
-            }
-
-            Button(onClick = {
-                fetchClipboardFromServer(
-                    context,
-                    ipAddress,
-                    onFetched = { if (!it.isNullOrBlank()) addToHistory(it) }
-                )
-            }) {
-                Text("📥 Fetch from PC")
-            }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = {
-                fileLauncher.launch("*/*") // any file type
-            }) {
-                Text("📁 Send File")
-            }
-            if (isUploading) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Uploading...", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-            }
-        }
+        // 2. Server Password
         TextField(
             value = password,
             onValueChange = {
@@ -209,6 +176,66 @@ fun ClipboardSyncApp() {
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
+
+        // 3. Connection Status
+        Text(
+            text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
+            color = if (isConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            fontSize = 16.sp
+        )
+
+        // 4. Sync and Fetch Buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(
+                onClick = {
+                    val clip = clipboardManager.primaryClip
+                    val text = clip?.getItemAt(0)?.text.toString()
+                    if (text != lastText) {
+                        lastText = text
+                        addToHistory(text)
+                        sendToServer(context, text, ipAddress, password)
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("📤 Sync Clipboard")
+            }
+
+            Button(
+                onClick = {
+                    fetchClipboardFromServer(
+                        context,
+                        ipAddress,
+                        onFetched = { if (!it.isNullOrBlank()) addToHistory(it) }
+                    )
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("📥 Fetch from PC")
+            }
+        }
+
+        // 5. Send File and Uploading Status
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = { fileLauncher.launch("*/*") },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("📁 Send File")
+            }
+            if (isUploading) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Uploading...", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        // 6. Clipboard History
         Text("Clipboard History", fontSize = 16.sp)
 
         var selectedItem by remember { mutableStateOf<String?>(null) }
@@ -244,6 +271,7 @@ fun ClipboardSyncApp() {
             }
         }
 
+        // Optional: Expanded item preview
         if (selectedItem != null) {
             val scrollState = rememberScrollState()
             AlertDialog(
@@ -267,6 +295,7 @@ fun ClipboardSyncApp() {
             )
         }
     }
+
 }
 
 fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {

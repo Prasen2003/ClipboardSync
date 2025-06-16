@@ -41,7 +41,7 @@ android {
 
 dependencies {
     implementation("androidx.activity:activity-ktx:1.8.0")
-
+    implementation("androidx.compose.material3:material3:1.2.0") // or latest stable
     implementation("org.json:json:20240303")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
