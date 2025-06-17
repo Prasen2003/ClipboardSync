@@ -283,48 +283,42 @@ fun ClipboardSyncApp() {
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Button(
-                    onClick = { fileLauncher.launch("*/*") },
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 4.dp), // add spacing on the end (right)
-                    shape = RoundedCornerShape(0.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = buttonColor,
-                        contentColor = buttonTextColor
-                    )
-                ) {
-                    Text("📁 Send File")
-                }
-
-                Button(
-                    onClick = {
-                        fetchFileListFromServer(context, ipAddress, password) { files ->
-                            availableFiles = files
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 4.dp), // add spacing on the start (left)
-                    shape = RoundedCornerShape(0.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = buttonColor,
-                        contentColor = buttonTextColor
-                    )
-                ) {
-                    Text("📃 Fetch Files")
-                }
+            Button(
+                onClick = { fileLauncher.launch("*/*") },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(0.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = buttonColor,
+                    contentColor = buttonTextColor
+                )
+            ) {
+                Text("📁 Send File")
             }
 
-
-            if (isUploading) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Uploading...", fontSize = 14.sp, color = Color.White)
+            Button(
+                onClick = {
+                    fetchFileListFromServer(context, ipAddress, password) { files ->
+                        availableFiles = files
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(0.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = buttonColor,
+                    contentColor = buttonTextColor
+                )
+            ) {
+                Text("📃 Fetch Files")
             }
         }
+
+        if (isUploading) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Uploading...", fontSize = 14.sp, color = Color.White)
+        }
+
 
         Divider(color = Color.Gray)
         
