@@ -64,7 +64,8 @@ fun ClipboardSyncApp() {
     val context = LocalContext.current
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-
+    var downloadingCount by remember { mutableStateOf(0) }
+    val isDownloading = downloadingCount > 0
     var uploadingCount by remember { mutableStateOf(0) }
     val isUploading = uploadingCount > 0
     var showFileDialog by remember { mutableStateOf(false) }
@@ -333,7 +334,10 @@ fun ClipboardSyncApp() {
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            downloadFileFromServer(context, file, ipAddress, password)
+                                            downloadingCount += 1
+                                            downloadFileFromServer(context, file, ipAddress, password) {
+                                                downloadingCount = maxOf(downloadingCount - 1, 0)
+                                            }
                                             showFileDialog = false
                                         }
                                         .padding(vertical = 8.dp),
@@ -358,7 +362,10 @@ fun ClipboardSyncApp() {
             Spacer(modifier = Modifier.height(8.dp))
             Text("Uploading...", fontSize = 14.sp, color = Color.White)
         }
-
+        if (isDownloading) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Downloading...", fontSize = 14.sp, color = Color.White)
+        }
 
         Divider(color = Color.Gray)
         
@@ -662,10 +669,12 @@ fun downloadFileFromServer(
     context: Context,
     filename: String,
     ip: String,
-    password: String
+    password: String,
+    onComplete: () -> Unit = {}
 ) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        onComplete()
         return
     }
 
@@ -679,6 +688,7 @@ fun downloadFileFromServer(
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
                 Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                onComplete()
             }
         }
 
@@ -686,6 +696,7 @@ fun downloadFileFromServer(
             if (!response.isSuccessful || response.body == null) {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
+                    onComplete()
                 }
                 return
             }
@@ -710,10 +721,12 @@ fun downloadFileFromServer(
                 } else {
                     Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                 }
+                onComplete()
             }
         }
     })
 }
+
 
 private fun saveToDownloadsQAndAbove(
     context: Context,
