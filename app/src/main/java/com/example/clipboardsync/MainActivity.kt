@@ -67,7 +67,7 @@ fun ClipboardSyncApp() {
 
     var uploadingCount by remember { mutableStateOf(0) }
     val isUploading = uploadingCount > 0
-
+    var showFileDialog by remember { mutableStateOf(false) }
     var lastText by remember { mutableStateOf("") }
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
     var history by remember { mutableStateOf(loadHistory(prefs)) }
@@ -301,6 +301,7 @@ fun ClipboardSyncApp() {
                 onClick = {
                     fetchFileListFromServer(context, ipAddress, password) { files ->
                         availableFiles = files
+                        showFileDialog = true // show dialog after fetching
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -312,6 +313,45 @@ fun ClipboardSyncApp() {
             ) {
                 Text("📃 Fetch Files")
             }
+
+        }
+        if (showFileDialog) {
+            AlertDialog(
+                onDismissRequest = { showFileDialog = false },
+                title = { Text("Available Files", color = Color.White) },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(min = 100.dp, max = 400.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (availableFiles.isEmpty()) {
+                            Text("No files found", color = Color.White)
+                        } else {
+                            availableFiles.forEach { file ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            downloadFileFromServer(context, file, ipAddress, password)
+                                            showFileDialog = false
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(file, color = Color.White, modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showFileDialog = false }) {
+                        Text("Close", color = Color.White)
+                    }
+                },
+                containerColor = Color(0xFF37474F)
+            )
         }
 
         if (isUploading) {
@@ -327,25 +367,6 @@ fun ClipboardSyncApp() {
                 .fillMaxSize()
                 .padding(top = 8.dp)
         ) {
-            item {
-                Text("Available Files", fontSize = 18.sp, color = Color.White)
-            }
-
-            items(availableFiles) { file ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            downloadFileFromServer(context, file, ipAddress, password)
-                        }
-                        .padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(file, color = Color.White)
-                }
-            }
-
             item {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("Clipboard History", fontSize = 18.sp, color = Color.White)
