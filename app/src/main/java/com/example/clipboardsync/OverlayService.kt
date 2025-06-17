@@ -5,16 +5,15 @@ import android.content.*
 import android.graphics.PixelFormat
 import android.os.*
 import android.view.*
-import android.widget.Toast
 import androidx.appcompat.widget.AppCompatImageView
 import androidx.core.app.NotificationCompat
-import okhttp3.*
-import java.io.IOException
 
 class OverlayService : Service() {
     private lateinit var windowManager: WindowManager
-    private lateinit var overlayView: AppCompatImageView
-    private lateinit var layoutParams: WindowManager.LayoutParams
+    private lateinit var syncView: AppCompatImageView
+    private lateinit var fetchView: AppCompatImageView
+    private lateinit var syncParams: WindowManager.LayoutParams
+    private lateinit var fetchParams: WindowManager.LayoutParams
 
     override fun onCreate() {
         super.onCreate()
@@ -28,25 +27,62 @@ class OverlayService : Service() {
 
         startForeground(1, notification)
 
-        // Layout params for the bubble
-        layoutParams = WindowManager.LayoutParams(
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val displayMetrics = resources.displayMetrics
+        val screenWidth = displayMetrics.widthPixels
+        val screenHeight = displayMetrics.heightPixels
+
+        val iconWidth = 150  // estimated icon width in pixels
+        val iconHeight = 150 // estimated icon height in pixels
+        val offsetFromRight = 30  // how far inward from the right edge
+
+        val startX = screenWidth - iconWidth - offsetFromRight
+        val startY = screenHeight / 2 - iconHeight / 2
+
+
+        val baseType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_PHONE
+
+        val baseFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        val baseFormat = PixelFormat.TRANSLUCENT
+
+        syncParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else
-                WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
+            baseType,
+            baseFlags,
+            baseFormat
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 100
-            y = 200
+            x = startX
+            y = startY
         }
 
-        overlayView = AppCompatImageView(this).apply {
+
+
+        fetchParams = WindowManager.LayoutParams(
+            syncParams.width,
+            syncParams.height,
+            syncParams.type,
+            syncParams.flags,
+            syncParams.format
+        ).apply {
+            gravity = syncParams.gravity
+            x = syncParams.x
+            y = syncParams.y + 150
+        }
+
+        syncView = AppCompatImageView(this).apply {
             setImageResource(R.drawable.ic_clipboard_sync)
             isClickable = true
+        }
+
+        fetchView = AppCompatImageView(this).apply {
+            setImageResource(R.drawable.ic_clipboard_sync)
+            isClickable = true
+            rotation = 180f // visually points downward
         }
 
         var initialX = 0
@@ -54,37 +90,47 @@ class OverlayService : Service() {
         var initialTouchX = 0f
         var initialTouchY = 0f
 
-        overlayView.setOnTouchListener { v, event ->
+        val sharedTouchListener = View.OnTouchListener { view, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    initialX = layoutParams.x
-                    initialY = layoutParams.y
+                    initialX = syncParams.x
+                    initialY = syncParams.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
                     true
                 }
-
                 MotionEvent.ACTION_MOVE -> {
-                    layoutParams.x = initialX + (event.rawX - initialTouchX).toInt()
-                    layoutParams.y = initialY + (event.rawY - initialTouchY).toInt()
-                    windowManager.updateViewLayout(overlayView, layoutParams)
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    syncParams.x = initialX + dx
+                    syncParams.y = initialY + dy
+                    fetchParams.x = syncParams.x
+                    fetchParams.y = syncParams.y + 150
+                    windowManager.updateViewLayout(syncView, syncParams)
+                    windowManager.updateViewLayout(fetchView, fetchParams)
                     true
                 }
-
                 MotionEvent.ACTION_UP -> {
-                    if ((event.rawX - initialTouchX).let { Math.abs(it) } < 10 &&
-                        (event.rawY - initialTouchY).let { Math.abs(it) } < 10) {
-                        syncClipboard()
+                    val movedX = Math.abs(event.rawX - initialTouchX)
+                    val movedY = Math.abs(event.rawY - initialTouchY)
+                    if (movedX < 10 && movedY < 10) {
+                        if (view == syncView) {
+                            syncClipboard()
+                        } else if (view == fetchView) {
+                            fetchClipboard()
+                        }
                     }
                     true
                 }
-
                 else -> false
             }
         }
 
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        windowManager.addView(overlayView, layoutParams)
+        syncView.setOnTouchListener(sharedTouchListener)
+        fetchView.setOnTouchListener(sharedTouchListener)
+
+        windowManager.addView(syncView, syncParams)
+        windowManager.addView(fetchView, fetchParams)
     }
 
     private fun syncClipboard() {
@@ -95,35 +141,12 @@ class OverlayService : Service() {
         startActivity(intent)
     }
 
-
-    private fun sendToServer(context: Context, text: String) {
-        val client = OkHttpClient()
-        val requestBody = FormBody.Builder()
-            .add("clipboard", text)
-            .build()
-
-        val request = Request.Builder()
-            .url("http://192.168.0.171:8000/clipboard") // Update IP if needed
-            .post(requestBody)
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(context, "❌ Sync failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-                }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                Handler(Looper.getMainLooper()).post {
-                    if (response.isSuccessful) {
-                        Toast.makeText(context, "✅ Clipboard synced", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        })
+    private fun fetchClipboard() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("fetchNow", true)
+        }
+        startActivity(intent)
     }
 
     private fun createNotificationChannel() {
@@ -140,8 +163,9 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::windowManager.isInitialized && ::overlayView.isInitialized) {
-            windowManager.removeView(overlayView)
+        if (::windowManager.isInitialized) {
+            if (::syncView.isInitialized) windowManager.removeView(syncView)
+            if (::fetchView.isInitialized) windowManager.removeView(fetchView)
         }
     }
 

@@ -913,13 +913,31 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+
+        val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
+
         if (intent.getBooleanExtra("syncNow", false)) {
             Handler(Looper.getMainLooper()).postDelayed({
                 syncClipboardFromActivity()
                 intent.removeExtra("syncNow")
             }, 50)
         }
+
+        if (intent.getBooleanExtra("fetchNow", false)) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                fetchClipboardFromServer(
+                    this,
+                    prefs.getString("server_ip", "") ?: ""
+                )
+                intent.removeExtra("fetchNow")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    moveTaskToBack(true)
+                }, 1000) // ✅ same delay as sync
+            }, 50)
+        }
     }
+
+
 
     private fun syncClipboardFromActivity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
