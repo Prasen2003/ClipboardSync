@@ -95,7 +95,7 @@ fun ClipboardSyncApp() {
 
     fun addToHistory(text: String) {
         val newHistory = listOf(text) + history.filterNot { it == text }
-        history = newHistory.take(20)
+        history = newHistory.take(50)
         prefs.edit().putString("clipboard_history", JSONArray(newHistory).toString()).apply()
     }
 
@@ -146,24 +146,104 @@ fun ClipboardSyncApp() {
             .background(Color(0xFF263238)) // dark blue-grey
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF37474F)),
+        shape = RoundedCornerShape(8.dp),
+        elevation = CardDefaults.cardElevation(4.dp)
     ) {
+        Column(modifier = Modifier.padding(16.dp)) {
 
-        Text("Connection Settings", fontSize = 18.sp, color = Color.White)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Connection Settings",
+                    fontSize = 18.sp,
+                    color = Color.White
+                )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+                Text(
+                    text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
+                    color = if (isConnected) Color.Green else Color.Red,
+                    fontSize = 14.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextField(
+                    value = ipAddress,
+                    onValueChange = {
+                        ipAddress = it
+                        saveIp(it)
+                    },
+                    label = { Text("Server IP Address", color = Color.White) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    colors = TextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedContainerColor = Color(0xFF455A64),
+                        unfocusedContainerColor = Color(0xFF455A64),
+                        focusedLabelColor = Color.White,
+                        unfocusedLabelColor = Color.White,
+                        focusedIndicatorColor = Color.White,
+                        unfocusedIndicatorColor = Color.White,
+                        cursorColor = Color.White
+                    )
+                )
+
+                Button(
+                    onClick = {
+                        discoverService(context) {
+                            ipAddress = it
+                            saveIp(it)
+                            Toast.makeText(context, "🔄 IP updated to $it", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier
+                        .height(56.dp)
+                        .width(56.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = buttonColor,
+                        contentColor = buttonTextColor
+                    ),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("🔄", fontSize = 22.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             TextField(
-                value = ipAddress,
+                value = password,
                 onValueChange = {
-                    ipAddress = it
-                    saveIp(it)
+                    password = it
+                    savePassword(it)
                 },
-                label = { Text("Server IP Address", color = Color.White) },
+                label = { Text("Server Password", color = Color.White) },
                 singleLine = true,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                            tint = Color.White
+                        )
+                    }
+                },
                 colors = TextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
@@ -176,64 +256,10 @@ fun ClipboardSyncApp() {
                     cursorColor = Color.White
                 )
             )
-            Button(
-                onClick = {
-                    discoverService(context) {
-                        ipAddress = it
-                        saveIp(it)
-                        Toast.makeText(context, "🔄 IP updated to $it", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                shape = RoundedCornerShape(0.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = buttonColor,
-                    contentColor = buttonTextColor
-                )
-            ) {
-                Text("🔄")
-            }
         }
-
-        TextField(
-            value = password,
-            onValueChange = {
-                password = it
-                savePassword(it)
-            },
-            label = { Text("Server Password") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                    Icon(
-                        imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                        tint = Color.White
-                    )
-                }
-            },
-            colors = TextFieldDefaults.colors(
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                focusedContainerColor = Color(0xFF455A64),
-                unfocusedContainerColor = Color(0xFF455A64),
-                focusedLabelColor = Color.White,
-                unfocusedLabelColor = Color.White,
-                focusedIndicatorColor = Color.White,
-                unfocusedIndicatorColor = Color.White,
-                cursorColor = Color.White
-            )
-
-        )
+    }
 
 
-        Text(
-            text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
-            color = if (isConnected) Color.Green else Color.Red,
-            fontSize = 16.sp,
-            modifier = Modifier.padding(top = 4.dp)
-        )
 
         Divider(color = Color.Gray)
 
@@ -254,13 +280,13 @@ fun ClipboardSyncApp() {
                     }
                 },
                 modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(0.dp),
+                shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = buttonColor,
                     contentColor = buttonTextColor
                 )
             ) {
-                Text("📤 Sync Clipboard")
+                Text("📤 Sync Text")
             }
 
             Button(
@@ -272,13 +298,13 @@ fun ClipboardSyncApp() {
                     )
                 },
                 modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(0.dp),
+                shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = buttonColor,
                     contentColor = buttonTextColor
                 )
             ) {
-                Text("📥 Fetch from PC")
+                Text("📥 Fetch Text")
             }
         }
 
@@ -289,7 +315,7 @@ fun ClipboardSyncApp() {
             Button(
                 onClick = { fileLauncher.launch("*/*") },
                 modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(0.dp),
+                shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = buttonColor,
                     contentColor = buttonTextColor
@@ -306,7 +332,7 @@ fun ClipboardSyncApp() {
                     }
                 },
                 modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(0.dp),
+                shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = buttonColor,
                     contentColor = buttonTextColor
@@ -368,16 +394,13 @@ fun ClipboardSyncApp() {
         }
 
         Divider(color = Color.Gray)
-        
+        Text("Clipboard History", fontSize = 18.sp, color = Color.White)
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 8.dp)
+                .padding(top = 2.dp)
         ) {
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Clipboard History", fontSize = 18.sp, color = Color.White)
-            }
 
             items(history) { item ->
                 Row(
