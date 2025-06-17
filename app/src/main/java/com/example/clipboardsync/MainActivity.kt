@@ -87,7 +87,7 @@ fun ClipboardSyncApp() {
             }
         }
     }
-    val buttonColor = Color(0xFF546E7A) // Muted Blue-Grey
+    val buttonColor = Color(0xFF546E7A)
     val buttonTextColor = Color.White
 
     fun savePassword(pass: String) = prefs.edit().putString("server_password", pass).apply()
@@ -258,12 +258,7 @@ fun ClipboardSyncApp() {
             )
         }
     }
-
-
-
         Divider(color = Color.Gray)
-
-        Text("Clipboard Actions", fontSize = 18.sp, color = Color.White)
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -272,11 +267,9 @@ fun ClipboardSyncApp() {
             Button(
                 onClick = {
                     clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()?.let { text ->
-                        if (text != lastText) {
-                            lastText = text
-                            addToHistory(text)
-                            sendToServer(context, text, ipAddress, password)
-                        }
+                        lastText = text
+                        addToHistory(text)
+                        sendToServer(context, text, ipAddress, password)
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -286,7 +279,7 @@ fun ClipboardSyncApp() {
                     contentColor = buttonTextColor
                 )
             ) {
-                Text("📤 Sync Text")
+                Text("\uD83D\uDCE4 Sync Text")
             }
 
             Button(
@@ -304,7 +297,7 @@ fun ClipboardSyncApp() {
                     contentColor = buttonTextColor
                 )
             ) {
-                Text("📥 Fetch Text")
+                Text("\uD83D\uDCE5 Fetch Text")
             }
         }
 
@@ -460,8 +453,6 @@ fun ClipboardSyncApp() {
         )
     }
 }
-
-
 
 fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {
     if (ip.isBlank()) {
@@ -934,14 +925,14 @@ class MainActivity : ComponentActivity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = clipboard.primaryClip
         val text = clip?.getItemAt(0)?.text?.toString()
-        val ip = getSharedPreferences("settings", Context.MODE_PRIVATE).getString("server_ip", "") ?: ""
+        val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val ip = prefs.getString("server_ip", "") ?: ""
 
         if (!text.isNullOrEmpty()) {
-            val password = getSharedPreferences("settings", Context.MODE_PRIVATE).getString("server_password", "") ?: ""
+            val password = prefs.getString("server_password", "") ?: ""
             sendToServer(this, text, ip, password)
-
         } else {
-            Toast.makeText(this, "📋 Clipboard is empty", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "\uD83D\uDCCB Clipboard is empty", Toast.LENGTH_SHORT).show()
         }
 
         Handler(Looper.getMainLooper()).postDelayed({
@@ -967,6 +958,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
         else startService(intent)
 
-        Toast.makeText(this, "✅ Overlay service started", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "\u2705 Overlay service started", Toast.LENGTH_SHORT).show()
     }
 }
