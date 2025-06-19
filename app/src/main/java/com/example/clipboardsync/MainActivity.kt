@@ -79,7 +79,8 @@ fun ClipboardSyncApp() {
     var isConnected by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
     var availableFiles by remember { mutableStateOf<List<String>>(emptyList()) }
-
+    val ip = prefs.getString("server_ip", "") ?: ""
+    var clipboardHistory by remember { mutableStateOf(listOf<String>()) }
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             uploadFileToServer(context, it, ipAddress, password) { uploading ->
@@ -289,10 +290,14 @@ fun ClipboardSyncApp() {
             Button(
                 onClick = {
                     fetchClipboardFromServer(
-                        context,
-                        ipAddress,
-                        onFetched = { if (!it.isNullOrBlank()) addToHistory(it) }
+                        context = context,
+                        ip = ip,
+                        password = password,
+                        clipboardManager = clipboardManager,
+                        addToHistory = { text -> addToHistory(text) },
+                        onComplete = { /* handle UI update after fetch */ }
                     )
+
                 },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(6.dp),
@@ -323,10 +328,14 @@ fun ClipboardSyncApp() {
 
             Button(
                 onClick = {
-                    fetchFileListFromServer(context, ipAddress, password) { files ->
-                        availableFiles = files
-                        showFileDialog = true // show dialog after fetching
-                    }
+                    fetchClipboardFromServer(
+                        context = context,
+                        ip = ipAddress,
+                        password = password,
+                        clipboardManager = clipboardManager,
+                        addToHistory = { text -> clipboardHistory = clipboardHistory + text },
+                        onComplete = { /* you can show a Toast or UI update if needed */ }
+                    )
                 },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(6.dp),
@@ -335,8 +344,9 @@ fun ClipboardSyncApp() {
                     contentColor = buttonTextColor
                 )
             ) {
-                Text("📃 Fetch Files")
+                Text("📃 Fetch File")
             }
+
 
         }
         if (showFileDialog) {
@@ -757,7 +767,8 @@ fun downloadFileFromServer(
                 return
             }
 
-            val encryptedBytes = response.body!!.bytes()
+            val encryptedBytes = response.body!!.byteStream().readBytes()
+
             val decryptedBytes = try {
                 decryptFileBytes(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
             } catch (e: Exception) {
@@ -903,67 +914,114 @@ fun sendToServer(context: Context, text: String, ip: String, password: String, o
 fun fetchClipboardFromServer(
     context: Context,
     ip: String,
-    onFetched: (String?) -> Unit = {},
-    onStatusChange: (Boolean) -> Unit = {}
+    password: String,
+    clipboardManager: ClipboardManager,
+    addToHistory: (String) -> Unit,
+    onComplete: () -> Unit
 ) {
-    if (ip.isBlank()) {
-        Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
-        onStatusChange(false)
-        return
-    }
-
-    val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-    val password = prefs.getString("server_password", "") ?: ""
-
-    val client = OkHttpClient()
     val request = Request.Builder()
         .url("http://$ip:8000/clipboard")
         .get()
         .addHeader("X-Auth-Token", password)
         .build()
 
+    val client = OkHttpClient()
+
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
-                onStatusChange(false)
-                Toast.makeText(context, "❌ Failed to fetch: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-                onFetched(null)
+                Toast.makeText(context, "❌ Fetch failed: ${e.message}", Toast.LENGTH_LONG).show()
+                onComplete()
             }
         }
 
         override fun onResponse(call: Call, response: Response) {
-            val result = response.body?.string()
-            Handler(Looper.getMainLooper()).post {
-                val isSuccess = response.isSuccessful
-                onStatusChange(isSuccess)
-
-                if (isSuccess && !result.isNullOrBlank()) {
-                    try {
-                        val encryptedText = JSONObject(result).getString("clipboard")
-                        val text = decryptAES(encryptedText, password)
-
-                        if (text.isNotBlank()) {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clip = ClipData.newPlainText("Clipboard", text)
-                            clipboard.setPrimaryClip(clip)
-                            Toast.makeText(context, "📥 Clipboard updated", Toast.LENGTH_SHORT).show()
-                            onFetched(text)
-                        } else {
-                            Toast.makeText(context, "⚠️ Empty clipboard data", Toast.LENGTH_SHORT).show()
-                            onFetched(null)
-                        }
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "⚠️ Parse error", Toast.LENGTH_SHORT).show()
-                        onFetched(null)
+            response.use {
+                if (!it.isSuccessful) {
+                    Handler(Looper.getMainLooper()).post {
+                        Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_SHORT).show()
+                        onComplete()
                     }
+                    return
+                }
+
+                val bodyString = it.body?.string()
+                val json = JSONObject(bodyString)
+                val isFile = json.optBoolean("is_file", false)
+
+                if (isFile) {
+                    val filename = json.optString("filename", "fetched_file")
+                    downloadFileFromClipboard(context, ip, password, filename, onComplete)
                 } else {
-                    Toast.makeText(context, "⚠️ Server error: ${response.code}", Toast.LENGTH_SHORT).show()
-                    onFetched(null)
+                    val encryptedText = json.getString("clipboard")
+                    val text = decryptAES(encryptedText, password)
+                    Handler(Looper.getMainLooper()).post {
+                        clipboardManager.setPrimaryClip(ClipData.newPlainText("label", text))
+                        addToHistory(text)
+                        Toast.makeText(context, "📋 Clipboard updated", Toast.LENGTH_SHORT).show()
+                        onComplete()
+                    }
                 }
             }
         }
     })
 }
+fun downloadFileFromClipboard(context: Context, ip: String, password: String, filename: String, onComplete: () -> Unit)
+{
+    val request = Request.Builder()
+        .url("http://$ip:8000/download_clipboard_file")
+        .get()
+        .addHeader("X-Auth-Token", password)
+        .build()
+
+    val client = OkHttpClient()
+
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                onComplete()
+            }
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (!response.isSuccessful) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
+                    onComplete()
+                }
+                return
+            }
+
+            val encryptedBytes = response.body!!.byteStream().readBytes()
+
+            val decryptedBytes = try {
+                decryptFileBytes(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+
+            if (decryptedBytes == null) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "❌ File decryption failed", Toast.LENGTH_LONG).show()
+                    onComplete()
+                }
+                return
+            }
+
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val file = File(downloadsDir, filename)
+            file.writeBytes(decryptedBytes)
+
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "✅ File downloaded: ${file.name}", Toast.LENGTH_SHORT).show()
+                onComplete()
+            }
+        }
+    })
+}
+
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -986,9 +1044,20 @@ class MainActivity : ComponentActivity() {
 
         if (intent.getBooleanExtra("fetchNow", false)) {
             Handler(Looper.getMainLooper()).postDelayed({
+                val clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val password = prefs.getString("password", "") ?: ""
+
                 fetchClipboardFromServer(
-                    this,
-                    prefs.getString("server_ip", "") ?: ""
+                    context = this,
+                    ip = prefs.getString("server_ip", "") ?: "",
+                    password = password,
+                    clipboardManager = clipboardManager,
+                    addToHistory = { _ -> }, // assuming you have this function
+                    onComplete = {
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            moveTaskToBack(true)
+                        }, 1000)
+                    }
                 )
                 intent.removeExtra("fetchNow")
                 Handler(Looper.getMainLooper()).postDelayed({

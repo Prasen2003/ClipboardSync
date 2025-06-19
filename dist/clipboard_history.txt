@@ -1,8 +1,14 @@
 [
+  "Toast",
+  "paste",
+  "\"clipboard\": encrypt_text(clipboard_text, PASSWORD),",
+  "Fetch Clipboard",
+  "Saving",
+  "Saving file",
+  "file",
   "C:\\Users\\Prasen\\AndroidStudioProjects\\ClipboardSync\\dist\\received_files",
   " job search ",
   "search ",
-  "Saving file",
   "Hello,\n\nWe appreciate your interest in Coditas and the time you've invested in\napplying for the opening.\n\nUnfortunately, we could not move ahead with your candidature. However,\nI  would like to thank you for giving us the opportunity to learn\nabout your skills and accomplishments.\n\nThis is not the end of the road. We hope you'll keep us in mind as we\nencourage you to apply again for a relevant opening after 3 months. We\nwish you good luck with your job search and future endeavors.\n\nYou can also follow us on social media for the latest job openings.",
   "8500g",
   "UPLOAD_DIR.mkdir(exist_ok=True)\r\n",
@@ -12,11 +18,5 @@
   "fetchView = AppCompatImageView(this).apply {\r\n    setImageResource(R.drawable.ic_clipboard_sync)\r\n    isClickable = true\r\n    rotation = 180f // visually points downward\r\n}",
   "mini",
   "gemini",
-  "deepcool pl550d",
-  "onResume",
-  "override fun onResume() {\r\n    super.onResume()\r\n\r\n    val prefs = getSharedPreferences(\"settings\", Context.MODE_PRIVATE)\r\n\r\n    if (intent.getBooleanExtra(\"syncNow\", false)) {\r\n        Handler(Looper.getMainLooper()).postDelayed({\r\n            syncClipboardFromActivity()\r\n            intent.removeExtra(\"syncNow\")\r\n        }, 50)\r\n    }\r\n\r\n    if (intent.getBooleanExtra(\"fetchNow\", false)) {\r\n        Handler(Looper.getMainLooper()).postDelayed({\r\n            fetchClipboardFromServer(\r\n                this,\r\n                prefs.getString(\"server_ip\", \"\") ?: \"\"\r\n            )\r\n            intent.removeExtra(\"fetchNow\")\r\n            Handler(Looper.getMainLooper()).postDelayed({\r\n                moveTaskToBack(true)\r\n            }, 1000) // ✅ same delay as sync\r\n        }, 50)\r\n    }\r\n}\r\n",
-  "150w",
-  "python compiler",
-  "Google",
-  "@Composable\nfun ClipboardSyncApp() {\n    val context = LocalContext.current\n    val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager\n    val prefs = context.getSharedPreferences(\"settings\", Context.MODE_PRIVATE)\n    var downloadingCount by remember { mutableStateOf(0) }\n    val isDownloading = downloadingCount > 0\n    var uploadingCount by remember { mutableStateOf(0) }\n    val isUploading = uploadingCount > 0\n    var showFileDialog by remember { mutableStateOf(false) }\n    var lastText by remember { mutableStateOf(\"\") }\n    var ipAddress by remember { mutableStateOf(prefs.getString(\"server_ip\", \"\") ?: \"\") }\n    var history by remember { mutableStateOf(loadHistory(prefs)) }\n    var isConnected by remember { mutableStateOf(false) }\n    var password by remember { mutableStateOf(prefs.getString(\"server_password\", \"\") ?: \"\") }\n    var availableFiles by remember { mutableStateOf<List<String>>(emptyList()) }\n\n    val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->\n        uri?.let {\n            uploadFileToServer(context, it, ipAddress, password) { uploading ->\n                uploadingCount = when {\n                    uploading -> uploadingCount + 1\n                    uploadingCount > 0 -> uploadingCount - 1\n                    else -> 0\n                }\n            }\n        }\n    }\n    val buttonColor = Color(0xFF546E7A)\n    val buttonTextColor = Color.White\n\n    fun savePassword(pass: String) = prefs.edit().putString(\"server_password\", pass).apply()\n    fun saveIp(ip: String) = prefs.edit().putString(\"server_ip\", ip).apply()\n\n    fun addToHistory(text: String) {\n        val newHistory = listOf(text) + history.filterNot { it == text }\n        history = newHistory.take(50)\n        prefs.edit().putString(\"clipboard_history\", JSONArray(newHistory).toString()).apply()\n    }\n\n    fun deleteFromHistory(item: String) {\n        history = history.filterNot { it == item }\n        prefs.edit().putString(\"clipboard_history\", JSONArray(history).toString()).apply()\n    }\n\n    LaunchedEffect(ipAddress) {\n        while (true) {\n            pingServer(context, ipAddress, password) { isConnected = it }\n            delay(5000)\n        }\n    }\n\n    LaunchedEffect(Unit) {\n        discoverService(context) {\n            ipAddress = it\n            saveIp(it)\n        }\n        clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()?.let {\n            if (it.isNotBlank()) {\n                lastText = it\n                addToHistory(it)\n            }\n        }\n    }\n\n    DisposableEffect(Unit) {\n        val listener = ClipboardManager.OnPrimaryClipChangedListener {\n            val text = clipboardManager.primaryClip?.getItemAt(0)?.text.toString()\n            if (text.isNotBlank() && text != lastText) {\n                lastText = text\n                addToHistory(text)\n                sendToServer(context, text, ipAddress, password)\n            }\n        }\n        clipboardManager.addPrimaryClipChangedListener(listener)\n        onDispose { clipboardManager.removePrimaryClipChangedListener(listener) }\n    }\n\n    var selectedItem by remember { mutableStateOf<String?>(null) }\n    var passwordVisible by remember { mutableStateOf(false) }"
+  "deepcool pl550d"
 ]

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import json
+import win32clipboard
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -25,6 +26,7 @@ import ctypes
 import win32con
 import win32gui
 import win32process
+import win32clipboard
 from fastapi.responses import FileResponse
 import Crypto
 from Crypto.Cipher import AES
@@ -346,13 +348,43 @@ async def ping(request: Request):
     check_password(request)
     return {"status": "ok"}
 
+def get_clipboard_file_path():
+    try:
+        win32clipboard.OpenClipboard()
+        CF_HDROP = 15
+        if win32clipboard.IsClipboardFormatAvailable(CF_HDROP):
+            files = win32clipboard.GetClipboardData(CF_HDROP)
+            return files[0] if files else None
+    except Exception as e:
+        print("Clipboard file check failed:", e)
+    finally:
+        try:
+            win32clipboard.CloseClipboard()
+        except:
+            pass
+    return None
+
 @app.get("/clipboard")
 async def get_clipboard(request: Request):
     check_password(request)
-    clipboard = pyperclip.paste()
-    encrypted = encrypt_text(clipboard, PASSWORD)
-    return {"status": "sent", "clipboard": encrypted}
 
+    # Try file path first
+    clipboard_file = get_clipboard_file_path()
+    if clipboard_file and os.path.isfile(clipboard_file):
+        return {
+            "status": "sent",
+            "clipboard": encrypt_text(clipboard_file, PASSWORD),
+            "is_file": True,
+            "filename": os.path.basename(clipboard_file)
+        }
+
+    # Fallback to text
+    clipboard_text = pyperclip.paste()
+    return {
+        "status": "sent",
+        "clipboard": encrypt_text(clipboard_text, PASSWORD),
+        "is_file": False
+    }
 
 @app.post("/clipboard")
 async def set_clipboard(request: Request):
@@ -401,6 +433,34 @@ def list_files(x_auth_token: str = Header(None)):
 
     files = os.listdir(UPLOAD_DIR)
     return {"files": files}
+
+@app.get("/download_clipboard_file")
+def download_clipboard_file(x_auth_token: str = Header(None)):
+    if x_auth_token != PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    clipboard = get_clipboard_file_path()
+    print(f"📋 File path from clipboard: {clipboard}")
+    print(f"📋 Clipboard content: {clipboard}")
+
+    if not os.path.isfile(clipboard):
+        print("❌ Clipboard does not contain a valid file path")
+        raise HTTPException(status_code=404, detail="Clipboard does not contain a valid file")
+
+    try:
+        with open(clipboard, "rb") as f:
+            raw = f.read()
+
+        padded = pad_data(raw)
+        encrypted = AES.new(get_aes_key(PASSWORD), AES.MODE_ECB).encrypt(padded)
+        encoded = base64.b64encode(encrypted)
+
+        return Response(content=encoded, media_type="application/octet-stream")
+
+    except Exception as e:
+        print(f"❌ Error serving clipboard file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send file")
+
 
 @app.get("/download/{filename}")
 def download_file(filename: str, x_auth_token: str = Header(None)):
