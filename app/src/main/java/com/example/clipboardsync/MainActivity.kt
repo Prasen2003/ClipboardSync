@@ -58,6 +58,10 @@ import android.provider.MediaStore
 import java.io.InputStream
 import java.net.URLConnection
 import android.os.Environment
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+import java.security.MessageDigest
+import android.util.Base64
 
 @Composable
 fun ClipboardSyncApp() {
@@ -453,6 +457,39 @@ fun ClipboardSyncApp() {
         )
     }
 }
+fun encryptAES(text: String, password: String): String {
+    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
+    val secretKey = SecretKeySpec(key, "AES")
+    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+    val encrypted = cipher.doFinal(text.toByteArray(Charsets.UTF_8))
+    return Base64.encodeToString(encrypted, Base64.NO_WRAP)
+}
+
+fun decryptAES(encrypted: String, password: String): String {
+    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
+    val secretKey = SecretKeySpec(key, "AES")
+    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.DECRYPT_MODE, secretKey)
+    val decoded = Base64.decode(encrypted, Base64.NO_WRAP)
+    return String(cipher.doFinal(decoded), Charsets.UTF_8)
+}
+
+fun encryptFileBytes(data: ByteArray, password: String): ByteArray {
+    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
+    val secretKey = SecretKeySpec(key, "AES")
+    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+    return cipher.doFinal(data)
+}
+
+fun decryptFileBytes(data: ByteArray, password: String): ByteArray {
+    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
+    val secretKey = SecretKeySpec(key, "AES")
+    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.DECRYPT_MODE, secretKey)
+    return cipher.doFinal(data)
+}
 
 fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {
     if (ip.isBlank()) {
@@ -550,7 +587,12 @@ fun uploadFileToServer(context: Context,
     val tempFile = File.createTempFile("upload", null, context.cacheDir)
     inputStream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
 
+    val fileBytes = tempFile.readBytes()
+    val encryptedBytes = encryptFileBytes(fileBytes, password)
+    tempFile.writeBytes(encryptedBytes)
+
     val fileBody = tempFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
+
     val multipartBody = MultipartBody.Builder()
         .setType(MultipartBody.FORM)
         .addFormDataPart("file", fileName, fileBody)
@@ -715,7 +757,22 @@ fun downloadFileFromServer(
                 return
             }
 
-            val inputStream = response.body!!.byteStream()
+            val encryptedBytes = response.body!!.bytes()
+            val decryptedBytes = try {
+                decryptFileBytes(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+            if (decryptedBytes == null) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "❌ File decryption failed", Toast.LENGTH_LONG).show()
+                    onComplete()
+                }
+                return
+            }
+            val inputStream = decryptedBytes.inputStream()
+
 
             // Detect MIME type from filename
             val mimeType = URLConnection.guessContentTypeFromName(filename)
@@ -811,8 +868,10 @@ fun sendToServer(context: Context, text: String, ip: String, password: String, o
     }
 
     val client = OkHttpClient()
-    val requestBody = FormBody.Builder().add("clipboard", text).build()
-    val request = Request.Builder()
+     val encryptedText = encryptAES(text, password)
+     val requestBody = FormBody.Builder().add("clipboard", encryptedText).build()
+
+     val request = Request.Builder()
         .url("http://$ip:8000/clipboard")
         .post(requestBody)
         .addHeader("X-Auth-Token", password)
@@ -880,7 +939,9 @@ fun fetchClipboardFromServer(
 
                 if (isSuccess && !result.isNullOrBlank()) {
                     try {
-                        val text = JSONObject(result).getString("clipboard")
+                        val encryptedText = JSONObject(result).getString("clipboard")
+                        val text = decryptAES(encryptedText, password)
+
                         if (text.isNotBlank()) {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             val clip = ClipData.newPlainText("Clipboard", text)

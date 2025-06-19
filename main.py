@@ -26,6 +26,11 @@ import win32con
 import win32gui
 import win32process
 from fastapi.responses import FileResponse
+import Crypto
+from Crypto.Cipher import AES
+from hashlib import sha256
+import base64
+from fastapi.responses import Response
 
 # === Globals ===
 PASSWORD = "your_secure_password"
@@ -345,20 +350,23 @@ async def ping(request: Request):
 async def get_clipboard(request: Request):
     check_password(request)
     clipboard = pyperclip.paste()
-    return {"status": "sent", "clipboard": clipboard}
+    encrypted = encrypt_text(clipboard, PASSWORD)
+    return {"status": "sent", "clipboard": encrypted}
 
 
 @app.post("/clipboard")
 async def set_clipboard(request: Request):
     check_password(request)
     form = await request.form()
-    clipboard = form.get("clipboard", "")
+    encrypted_clipboard = form.get("clipboard", "")
+    clipboard = decrypt_text(encrypted_clipboard, PASSWORD)
     pyperclip.copy(clipboard)
 
     if clipboard.strip():
         add_to_history(clipboard)
 
     return {"status": "received", "clipboard": clipboard}
+
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...), x_auth_token: str = Header(None)):
@@ -372,12 +380,15 @@ async def upload_file(file: UploadFile = File(...), x_auth_token: str = Header(N
     file_path = save_path / safe_filename
 
     content = await file.read()
+    decrypted_content = AES.new(get_aes_key(PASSWORD), AES.MODE_ECB).decrypt(content)
+    decrypted_content = unpad_data(decrypted_content)
+
     print(f"📁 Saving file: {file_path}")
     print(f"📦 Received size: {len(content)} bytes")
 
     with open(file_path, "wb") as f:
-        f.write(content)
-
+        f.write(decrypted_content)
+        
     return {"status": "success", "filename": safe_filename}
 
 @app.get("/list-files")
@@ -400,7 +411,16 @@ def download_file(filename: str, x_auth_token: str = Header(None)):
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileResponse(file_path, media_type='application/octet-stream', filename=filename)
+    with open(file_path, "rb") as f:
+        raw = f.read()
+
+    padded = pad_data(raw)  # Ensure AES-compatible block size
+    cipher = AES.new(get_aes_key(PASSWORD), AES.MODE_ECB)
+    encrypted = cipher.encrypt(padded)
+    encoded = base64.b64encode(encrypted)
+
+    return Response(content=encoded, media_type="application/octet-stream")
+
 
 def open_received_files_folder(icon, item):
     folder_path = str(UPLOAD_DIR.resolve())
@@ -452,6 +472,32 @@ def show_set_password_window(icon=None, item=None):
     show_checkbox.pack(pady=(0, 10))
 
     ttk.Button(win, text="Save", command=save_new_password).pack(pady=10)
+
+def pad_data(data: bytes) -> bytes:
+    pad_len = 16 - len(data) % 16
+    return data + bytes([pad_len] * pad_len)
+
+def unpad_data(data: bytes) -> bytes:
+    pad_len = data[-1]
+    return data[:-pad_len]
+
+def get_aes_key(password: str) -> bytes:
+    return sha256(password.encode()).digest()
+
+def encrypt_text(text: str, password: str) -> str:
+    key = get_aes_key(password)
+    cipher = AES.new(key, AES.MODE_ECB)
+    padded = text + chr(16 - len(text) % 16) * (16 - len(text) % 16)
+    encrypted = cipher.encrypt(padded.encode("utf-8"))
+    return base64.b64encode(encrypted).decode("utf-8")
+
+def decrypt_text(encrypted_text: str, password: str) -> str:
+    key = get_aes_key(password)
+    cipher = AES.new(key, AES.MODE_ECB)
+    decoded = base64.b64decode(encrypted_text)
+    decrypted = cipher.decrypt(decoded)
+    pad_len = decrypted[-1]
+    return decrypted[:-pad_len].decode("utf-8")
 
 # === Main ===
 if __name__ == "__main__":
