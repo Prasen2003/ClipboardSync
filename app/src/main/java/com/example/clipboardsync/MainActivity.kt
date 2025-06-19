@@ -810,59 +810,63 @@ fun downloadFileFromServer(
 }
 
 
+// Only call this function if API >= Q
 private fun saveToDownloadsQAndAbove(
     context: Context,
     filename: String,
     mimeType: String,
-    inputStream: java.io.InputStream,
+    inputStream: InputStream,
     size: Long
 ): String? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+    return try {
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        // Delete any file with same name first
+        resolver.delete(
+            collection,
+            "${MediaStore.Downloads.DISPLAY_NAME}=?",
+            arrayOf(filename)
+        )
 
-    val contentValues = ContentValues().apply {
-        put(MediaStore.Downloads.DISPLAY_NAME, filename)
-        put(MediaStore.Downloads.MIME_TYPE, mimeType)
-        put(MediaStore.Downloads.IS_PENDING, 1)
-        put(MediaStore.Downloads.SIZE, size)
-    }
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+            put(MediaStore.Downloads.SIZE, size)
+        }
 
-    val resolver = context.contentResolver
-    val downloadsUri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-    val fileUri: Uri? = resolver.insert(downloadsUri, contentValues)
-
-    if (fileUri != null) {
-        try {
+        val fileUri = resolver.insert(collection, values)
+        if (fileUri != null) {
             resolver.openOutputStream(fileUri)?.use { output ->
                 inputStream.copyTo(output)
             }
-            contentValues.clear()
-            contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
-            resolver.update(fileUri, contentValues, null, null)
-            return fileUri.toString()
-        } catch (e: Exception) {
-            e.printStackTrace()
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(fileUri, values, null, null)
+            fileUri.toString()
+        } else {
+            null
         }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
     }
-
-    return null
 }
-
-
+// Legacy method for API < Q
 private fun saveToDownloadsLegacy(
     context: Context,
     filename: String,
-    inputStream: java.io.InputStream
+    inputStream: InputStream
 ): String? {
     val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     if (!downloadsDir.exists()) downloadsDir.mkdirs()
 
     val outFile = File(downloadsDir, filename)
-
+    if (outFile.exists()) outFile.delete()
     return try {
-        inputStream.use { input ->
-            outFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
+        outFile.outputStream().use { output ->
+            inputStream.copyTo(output)
         }
         outFile.absolutePath
     } catch (e: Exception) {
@@ -870,6 +874,7 @@ private fun saveToDownloadsLegacy(
         null
     }
 }
+
 fun sendToServer(context: Context, text: String, ip: String, password: String, onStatusChange: (Boolean) -> Unit = {})
  {
     if (ip.isBlank()) {
@@ -966,16 +971,19 @@ fun fetchClipboardFromServer(
         }
     })
 }
-fun downloadFileFromClipboard(context: Context, ip: String, password: String, filename: String, onComplete: () -> Unit)
-{
+fun downloadFileFromClipboard(
+    context: Context,
+    ip: String,
+    password: String,
+    filename: String,
+    onComplete: () -> Unit
+) {
     val request = Request.Builder()
         .url("http://$ip:8000/download_clipboard_file")
         .get()
         .addHeader("X-Auth-Token", password)
         .build()
-
     val client = OkHttpClient()
-
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
@@ -983,7 +991,6 @@ fun downloadFileFromClipboard(context: Context, ip: String, password: String, fi
                 onComplete()
             }
         }
-
         override fun onResponse(call: Call, response: Response) {
             if (!response.isSuccessful) {
                 Handler(Looper.getMainLooper()).post {
@@ -992,16 +999,13 @@ fun downloadFileFromClipboard(context: Context, ip: String, password: String, fi
                 }
                 return
             }
-
             val encryptedBytes = response.body!!.byteStream().readBytes()
-
             val decryptedBytes = try {
                 decryptFileBytes(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
             }
-
             if (decryptedBytes == null) {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(context, "❌ File decryption failed", Toast.LENGTH_LONG).show()
@@ -1009,19 +1013,50 @@ fun downloadFileFromClipboard(context: Context, ip: String, password: String, fi
                 }
                 return
             }
+            val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
+            val fileSize = decryptedBytes.size.toLong()
+            val inputStream = decryptedBytes.inputStream()
+            val savedPath: String? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveToDownloadsQAndAbove(context, filename, mimeType, inputStream, fileSize)
+            } else {
+                saveToDownloadsLegacy(context, filename, decryptedBytes.inputStream())
+            }
 
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val file = File(downloadsDir, filename)
-            file.writeBytes(decryptedBytes)
+            // Extra robustness: check if file is there
+            val fileActuallyExists = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // For MediaStore, check via query (optional, but robust)
+                try {
+                    val resolver = context.contentResolver
+                    val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    val cursor = resolver.query(
+                        collection,
+                        arrayOf(MediaStore.Downloads.DISPLAY_NAME),
+                        "${MediaStore.Downloads.DISPLAY_NAME}=?",
+                        arrayOf(filename),
+                        null
+                    )
+                    val exists = cursor?.moveToFirst() == true
+                    cursor?.close()
+                    exists
+                } catch (e: Exception) {
+                    false
+                }
+            } else {
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                File(downloadsDir, filename).exists()
+            }
 
             Handler(Looper.getMainLooper()).post {
-                Toast.makeText(context, "✅ File downloaded: ${file.name}", Toast.LENGTH_SHORT).show()
+                if (savedPath != null || fileActuallyExists) {
+                    Toast.makeText(context, "✅ File downloaded: $filename", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
+                }
                 onComplete()
             }
         }
     })
 }
-
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
