@@ -289,7 +289,7 @@ fun ClipboardSyncApp() {
             shape = RoundedCornerShape(8.dp),
             elevation = CardDefaults.cardElevation(4.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 2.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -297,7 +297,7 @@ fun ClipboardSyncApp() {
                 ) {
                     Text(
                         text = "Connection Settings",
-                        fontSize = 18.sp,
+                        fontSize = 14.sp,
                         color = Color.White
                     )
                     Text(
@@ -387,11 +387,11 @@ fun ClipboardSyncApp() {
                     )
                 )
                 // --- Overlay Buttons Toggle Switch ---
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {

@@ -7,11 +7,12 @@ import android.os.*
 import android.view.*
 import androidx.appcompat.widget.AppCompatImageView
 import androidx.core.app.NotificationCompat
+import android.widget.ImageView
 
 class OverlayService : Service() {
     private lateinit var windowManager: WindowManager
-    private var syncView: AppCompatImageView? = null
-    private var fetchView: AppCompatImageView? = null
+    private var syncView: ImageView? = null
+    private var fetchView: ImageView? = null
     private lateinit var syncParams: WindowManager.LayoutParams
     private lateinit var fetchParams: WindowManager.LayoutParams
 
@@ -84,11 +85,11 @@ class OverlayService : Service() {
     private fun showOverlayBubble() {
         if (syncView != null && fetchView != null) return // Already shown
 
-        syncView = AppCompatImageView(this).apply {
+        syncView = ImageView(this).apply {
             setImageResource(R.drawable.ic_clipboard_sync)
             isClickable = true
         }
-        fetchView = AppCompatImageView(this).apply {
+        fetchView = ImageView(this).apply {
             setImageResource(R.drawable.ic_clipboard_sync)
             isClickable = true
             rotation = 180f
@@ -178,7 +179,7 @@ class OverlayService : Service() {
             val channel = NotificationChannel(
                 "clipboard_channel",
                 "Clipboard Sync",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT // <-- CHANGED
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -209,10 +210,11 @@ class OverlayService : Service() {
 
         return NotificationCompat.Builder(this, "clipboard_channel")
             .setContentTitle("Clipboard Sync Running")
-            .setContentText("Tap bubble or use notification buttons")
             .setSmallIcon(R.drawable.ic_clipboard_sync)
             .addAction(R.drawable.ic_clipboard_sync, "Sync Clipboard", syncPendingIntent)
             .addAction(R.drawable.ic_clipboard_sync, "Fetch Clipboard", fetchPendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOngoing(true)
             .build()
     }
 
