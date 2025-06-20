@@ -68,6 +68,18 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.CipherInputStream
 import android.util.Base64InputStream
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import android.app.PendingIntent
+import android.content.Intent
+import androidx.core.content.FileProvider
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import androidx.activity.result.ActivityResultLauncher
+
+
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -548,6 +560,66 @@ fun decryptFileBytesCBC(data: ByteArray, password: String): ByteArray {
     cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
     return cipher.doFinal(ciphertext)
 }
+
+fun showDownloadNotification(context: Context, filePathOrUri: String, filename: String, mimeType: String) {
+    val channelId = "clipboard_download_channel"
+    val notificationId = 1001
+
+    // Create notification channel
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val name = "ClipboardSync Downloads"
+        val descriptionText = "Notifications for completed file downloads"
+        val importance = NotificationManager.IMPORTANCE_DEFAULT
+        val channel = NotificationChannel(channelId, name, importance).apply {
+            description = descriptionText
+        }
+        val notificationManager: NotificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    // Check notification permission for API 33+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        ActivityCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
+        != PackageManager.PERMISSION_GRANTED) {
+        return
+    }
+
+    // Use the correct URI
+    val fileUri: Uri = if (filePathOrUri.startsWith("content://")) {
+        Uri.parse(filePathOrUri)
+    } else {
+        File(filePathOrUri).let { file ->
+            FileProvider.getUriForFile(context, context.packageName + ".provider", file)
+        }
+    }
+
+    val openIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(fileUri, mimeType)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    // Wrap it in a chooser for best compatibility
+    val chooserIntent = Intent.createChooser(openIntent, "Open with")
+
+    val pendingIntent = PendingIntent.getActivity(
+        context, 0, chooserIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or
+                (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+    )
+
+    val notification = NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(android.R.drawable.stat_sys_download_done)
+        .setContentTitle("Download complete")
+        .setContentText(filename)
+        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+        .setAutoCancel(true)
+        .addAction(android.R.drawable.ic_menu_view, "Open", pendingIntent)
+        .setContentIntent(pendingIntent)
+        .build()
+
+    NotificationManagerCompat.from(context).notify(notificationId, notification)
+}
+
 fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {
     if (ip.isBlank()) {
         onResult(false)
@@ -845,6 +917,7 @@ fun downloadFileFromServer(
                 Handler(Looper.getMainLooper()).post {
                     if (savedPath != null) {
                         Toast.makeText(context, "✅ Downloaded to: $savedPath", Toast.LENGTH_LONG).show()
+                        showDownloadNotification(context, savedPath, filename, mimeType)
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                     }
@@ -1132,6 +1205,7 @@ fun downloadFileFromClipboard(
                 Handler(Looper.getMainLooper()).post {
                     if (savedPath != null) {
                         Toast.makeText(context, "✅ File downloaded: $filename", Toast.LENGTH_SHORT).show()
+                        showDownloadNotification(context, savedPath, filename, mimeType)
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                     }
@@ -1148,8 +1222,26 @@ fun downloadFileFromClipboard(
 }
 
 class MainActivity : ComponentActivity() {
+    // In MainActivity:
+    private lateinit var requestNotificationPermissionLauncher: ActivityResultLauncher<String>
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        requestNotificationPermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { isGranted: Boolean ->
+            // You can show a toast here or log if you want
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestNotificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
         setContent { ClipboardSyncApp() }
         checkOverlayPermission()
     }
