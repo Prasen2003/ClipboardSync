@@ -66,6 +66,8 @@ import java.security.SecureRandom
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
+import javax.crypto.CipherInputStream
+import android.util.Base64InputStream
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -811,44 +813,48 @@ fun downloadFileFromServer(
                 }
                 return
             }
+            try {
+                val encryptedStream = response.body!!.byteStream()
+                // --- Patch: decode base64 on the fly ---
+                val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
 
-            val encryptedBytes = response.body!!.byteStream().readBytes()
+                // Read salt + iv headers (first 32 bytes) from the decoded stream
+                val header = ByteArray(SALT_SIZE + IV_SIZE)
+                var read = 0
+                while (read < header.size) {
+                    val r = b64Stream.read(header, read, header.size - read)
+                    if (r == -1) throw IOException("Unexpected EOF in header")
+                    read += r
+                }
+                val salt = header.copyOfRange(0, SALT_SIZE)
+                val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
+                val key = deriveKey(password, salt)
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+                val decryptedStream = CipherInputStream(b64Stream, cipher)
 
-            val decryptedBytes = try {
-                decryptFileBytesCBC(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-            if (decryptedBytes == null) {
+                val mimeType = URLConnection.guessContentTypeFromName(filename)
+                    ?: "application/octet-stream"
+
+                val savedPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    saveToDownloadsQAndAbove(context, filename, mimeType, decryptedStream, -1)
+                } else {
+                    saveToDownloadsLegacy(context, filename, decryptedStream)
+                }
+
                 Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(context, "❌ File decryption failed", Toast.LENGTH_LONG).show()
+                    if (savedPath != null) {
+                        Toast.makeText(context, "✅ Downloaded to: $savedPath", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
+                    }
                     onComplete()
                 }
-                return
-            }
-            val inputStream = decryptedBytes.inputStream()
-
-
-            // Detect MIME type from filename
-            val mimeType = URLConnection.guessContentTypeFromName(filename)
-                ?: "application/octet-stream"
-
-            val fileSize = response.body!!.contentLength()
-
-            val savedPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveToDownloadsQAndAbove(context, filename, mimeType, inputStream, fileSize)
-            } else {
-                saveToDownloadsLegacy(context, filename, inputStream)
-            }
-
-            Handler(Looper.getMainLooper()).post {
-                if (savedPath != null) {
-                    Toast.makeText(context, "✅ Downloaded to: $savedPath", Toast.LENGTH_LONG).show()
-                } else {
-                    Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "❌ File decryption failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    onComplete()
                 }
-                onComplete()
             }
         }
     })
@@ -902,12 +908,16 @@ private fun saveToDownloadsQAndAbove(
             put(MediaStore.Downloads.DISPLAY_NAME, filename)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
             put(MediaStore.Downloads.IS_PENDING, 1)
-            put(MediaStore.Downloads.SIZE, size)
+            if (size > 0) put(MediaStore.Downloads.SIZE, size)
         }
         val fileUri = resolver.insert(collection, values)
         if (fileUri != null) {
             resolver.openOutputStream(fileUri)?.use { output ->
-                inputStream.copyTo(output)
+                val buffer = ByteArray(8192)
+                var len: Int
+                while (inputStream.read(buffer).also { len = it } != -1) {
+                    output.write(buffer, 0, len)
+                }
             }
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
@@ -942,6 +952,7 @@ private fun saveToDownloadsQAndAbove(
     }
 }
 
+
 private fun saveToDownloadsLegacy(
     context: Context,
     filename: String,
@@ -952,8 +963,14 @@ private fun saveToDownloadsLegacy(
     val outFile = File(downloadsDir, filename)
     if (outFile.exists()) outFile.delete()
     return try {
-        outFile.outputStream().use { output ->
-            inputStream.copyTo(output)
+        inputStream.use { input ->
+            outFile.outputStream().use { output ->
+                val buffer = ByteArray(8192)
+                var len: Int
+                while (input.read(buffer).also { len = it } != -1) {
+                    output.write(buffer, 0, len)
+                }
+            }
         }
         outFile.absolutePath
     } catch (e: Exception) {
@@ -1079,42 +1096,52 @@ fun downloadFileFromClipboard(
             }
         }
         override fun onResponse(call: Call, response: Response) {
-            if (!response.isSuccessful) {
+            if (!response.isSuccessful || response.body == null) {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
                 return
             }
-            val encryptedBytes = response.body!!.byteStream().readBytes()
-            val decryptedBytes = try {
-                decryptFileBytesCBC(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-            if (decryptedBytes == null) {
+            try {
+                val encryptedStream = response.body!!.byteStream()
+                // --- Patch: decode base64 on the fly ---
+                val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
+
+                // Read salt + iv headers (first 32 bytes) from the decoded stream
+                val header = ByteArray(SALT_SIZE + IV_SIZE)
+                var read = 0
+                while (read < header.size) {
+                    val r = b64Stream.read(header, read, header.size - read)
+                    if (r == -1) throw IOException("Unexpected EOF in header")
+                    read += r
+                }
+                val salt = header.copyOfRange(0, SALT_SIZE)
+                val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
+                val key = deriveKey(password, salt)
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+                val decryptedStream = CipherInputStream(b64Stream, cipher)
+
+                val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
+                val savedPath: String? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    saveToDownloadsQAndAbove(context, filename, mimeType, decryptedStream, -1)
+                } else {
+                    saveToDownloadsLegacy(context, filename, decryptedStream)
+                }
                 Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(context, "❌ File decryption failed", Toast.LENGTH_LONG).show()
+                    if (savedPath != null) {
+                        Toast.makeText(context, "✅ File downloaded: $filename", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
+                    }
                     onComplete()
                 }
-                return
-            }
-            val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
-            val fileSize = decryptedBytes.size.toLong()
-            val inputStream = decryptedBytes.inputStream()
-            val savedPath: String? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveToDownloadsQAndAbove(context, filename, mimeType, inputStream, fileSize)
-            } else {
-                saveToDownloadsLegacy(context, filename, decryptedBytes.inputStream())
-            }
-            Handler(Looper.getMainLooper()).post {
-                if (savedPath != null) {
-                    Toast.makeText(context, "✅ File downloaded: $filename", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "❌ File decryption failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    onComplete()
                 }
-                onComplete()
             }
         }
     })
