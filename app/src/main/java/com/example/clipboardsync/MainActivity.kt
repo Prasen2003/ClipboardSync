@@ -185,9 +185,14 @@ fun ClipboardSyncApp() {
     var availableFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     val ip = prefs.getString("server_ip", "") ?: ""
     var clipboardHistory by remember { mutableStateOf(listOf<String>()) }
+
+    // Overlay toggle state
+    var overlayEnabled by remember { mutableStateOf(prefs.getBoolean("overlay_enabled", true)) }
+
     // PROGRESS STATES
     var uploadProgress by remember { mutableStateOf<Float?>(null) }
     var downloadProgress by remember { mutableStateOf<Float?>(null) }
+
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             uploadFileToServer(
@@ -223,6 +228,16 @@ fun ClipboardSyncApp() {
         prefs.edit().putString("clipboard_history", JSONArray(history).toString()).apply()
     }
 
+    // Helper function to start overlay service
+    fun Context.startOverlayService() {
+        val intent = Intent(this, OverlayService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
     LaunchedEffect(ipAddress) {
         while (true) {
             pingServer(context, ipAddress, password) { isConnected = it }
@@ -241,6 +256,8 @@ fun ClipboardSyncApp() {
                 addToHistory(it)
             }
         }
+        // Respect overlayEnabled on app start
+        context.startOverlayService() // Always start the service on app start
     }
 
     DisposableEffect(Unit) {
@@ -369,6 +386,29 @@ fun ClipboardSyncApp() {
                         cursorColor = Color.White
                     )
                 )
+                // --- Overlay Buttons Toggle Switch ---
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Overlay Buttons", color = Color.White)
+                    Switch(
+                        checked = overlayEnabled,
+                        onCheckedChange = { checked ->
+                            overlayEnabled = checked
+                            prefs.edit().putBoolean("overlay_enabled", checked).apply()
+                            val action = if (checked) "show" else "hide"
+                            context.startService(
+                                Intent(context, OverlayService::class.java)
+                                    .putExtra("overlay_action", action)
+                            )
+                        }
+                    )
+                }
             }
         }
         Divider(color = Color.Gray)
@@ -672,7 +712,14 @@ fun decryptStreamCBC(
         }
     }
 }
-
+fun Context.startOverlayService() {
+    val intent = Intent(this, OverlayService::class.java)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        startForegroundService(intent)
+    } else {
+        startService(intent)
+    }
+}
 fun showDownloadNotification(context: Context, filePathOrUri: String, filename: String, mimeType: String) {
     val channelId = "clipboard_download_channel"
     val notificationId = 1001
@@ -1391,7 +1438,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        startOverlayService() // Always start the service, regardless of overlay_enabled
         requestNotificationPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { isGranted: Boolean ->
@@ -1432,13 +1479,11 @@ class MainActivity : ComponentActivity() {
                     password = password,
                     clipboardManager = clipboardManager,
                     addToHistory = { _ -> },
-                    onComplete = {
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            moveTaskToBack(true)
-                        }, 1000)
-                    },
+                    onComplete = { /* Optionally show a notification here if desired */ },
                     onProgress = {}
                 )
+                // Minimize the app right after starting fetch (don't wait for onComplete)
+                moveTaskToBack(true)
                 intent.removeExtra("fetchNow")
             }, 50)
         }
@@ -1483,7 +1528,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
         else startService(intent)
 
-        Toast.makeText(this, "\u2705 Overlay service started", Toast.LENGTH_SHORT).show()
     }
 }
 
