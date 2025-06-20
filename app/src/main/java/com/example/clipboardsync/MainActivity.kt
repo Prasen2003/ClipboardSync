@@ -806,50 +806,6 @@ fun fetchFileListFromServer(
     })
 }
 
-fun saveFileToDownloads(
-    context: Context,
-    filename: String,
-    mimeType: String,
-    inputStream: InputStream,
-    size: Long
-): String? {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        // API 29+
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, filename)
-            put(MediaStore.Downloads.MIME_TYPE, mimeType)
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-
-        val resolver = context.contentResolver
-        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val fileUri = resolver.insert(collection, values)
-
-        if (fileUri != null) {
-            resolver.openOutputStream(fileUri)?.use { output ->
-                inputStream.copyTo(output)
-            }
-            values.clear()
-            values.put(MediaStore.Downloads.IS_PENDING, 0)
-            resolver.update(fileUri, values, null, null)
-            return fileUri.toString()
-        } else {
-            null
-        }
-    } else {
-        // Below API 29
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        if (!downloadsDir.exists()) downloadsDir.mkdirs()
-        val file = File(downloadsDir, filename)
-        inputStream.use { input ->
-            file.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-        return file.absolutePath
-    }
-}
-
 fun downloadFileFromServer(
     context: Context,
     filename: String,
@@ -908,16 +864,15 @@ fun downloadFileFromServer(
                 val mimeType = URLConnection.guessContentTypeFromName(filename)
                     ?: "application/octet-stream"
 
-                val savedPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    saveToDownloadsQAndAbove(context, filename, mimeType, decryptedStream, -1)
+                val (savedPath, actualName) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    saveToDownloadsQAndAboveUnique(context, filename, mimeType, decryptedStream, -1)
                 } else {
-                    saveToDownloadsLegacy(context, filename, decryptedStream)
+                    saveToDownloadsLegacyUnique(context, filename, decryptedStream)
                 }
-
                 Handler(Looper.getMainLooper()).post {
                     if (savedPath != null) {
-                        Toast.makeText(context, "✅ Downloaded to: $savedPath", Toast.LENGTH_LONG).show()
-                        showDownloadNotification(context, savedPath, filename, mimeType)
+                        Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
+                        showDownloadNotification(context, savedPath, actualName ?: filename, mimeType)
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                     }
@@ -932,109 +887,109 @@ fun downloadFileFromServer(
         }
     })
 }
-
-private fun deleteAllDownloadsByNameBlocking(context: Context, fileName: String, timeoutMs: Long = 2000) {
-    // Only call this for API 29+
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-
-    val resolver = context.contentResolver
-    val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-    val startTime = System.currentTimeMillis()
-    while (true) {
-        var found = false
-        val cursor = resolver.query(
-            collection,
-            arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
-            "${MediaStore.Downloads.DISPLAY_NAME}=?",
-            arrayOf(fileName),
-            null
-        )
-        cursor?.use {
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
-            while (cursor.moveToNext()) {
-                found = true
-                val id = cursor.getLong(idCol)
-                val uri = ContentUris.withAppendedId(collection, id)
-                resolver.delete(uri, null, null)
-            }
+fun getUniqueFilename(context: Context, filename: String, isLegacy: Boolean): String {
+    val (base, ext) = run {
+        val dot = filename.lastIndexOf('.')
+        if (dot in 1 until filename.length - 1)
+            filename.substring(0, dot) to filename.substring(dot)
+        else filename to ""
+    }
+    fun fileExists(name: String): Boolean {
+        return if (isLegacy) {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            File(downloadsDir, name).exists()
+        } else {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val cursor = resolver.query(
+                collection,
+                arrayOf(MediaStore.Downloads.DISPLAY_NAME),
+                "${MediaStore.Downloads.DISPLAY_NAME}=?",
+                arrayOf(name),
+                null
+            )
+            val exists = cursor?.moveToFirst() == true
+            cursor?.close()
+            exists
         }
-        if (!found) break
-        if (System.currentTimeMillis() - startTime > timeoutMs) break
-        Thread.sleep(100)
+    }
+    if (!fileExists(filename)) return filename
+    var n = 1
+    while (true) {
+        val candidate = "$base ($n)$ext"
+        if (!fileExists(candidate)) return candidate
+        n++
     }
 }
 
-private fun saveToDownloadsQAndAbove(
+fun saveToDownloadsQAndAboveUnique(
     context: Context,
     filename: String,
     mimeType: String,
     inputStream: InputStream,
     size: Long
-): String? {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+): Pair<String?, String?> {
     val resolver = context.contentResolver
     val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-    try {
-        // Robust delete before insert, blocking until gone or timeout
-        deleteAllDownloadsByNameBlocking(context, filename)
+
+    var uniqueName = getUniqueFilename(context, filename, isLegacy = false)
+    var attempt = 0
+    var fileUri: Uri? = null
+    var outputWritten = false
+
+    while (attempt < 10) { // don't loop forever
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(MediaStore.Downloads.DISPLAY_NAME, uniqueName)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
             put(MediaStore.Downloads.IS_PENDING, 1)
             if (size > 0) put(MediaStore.Downloads.SIZE, size)
         }
-        val fileUri = resolver.insert(collection, values)
+        fileUri = resolver.insert(collection, values)
+
         if (fileUri != null) {
-            resolver.openOutputStream(fileUri)?.use { output ->
-                val buffer = ByteArray(8192)
-                var len: Int
-                while (inputStream.read(buffer).also { len = it } != -1) {
-                    output.write(buffer, 0, len)
+            try {
+                resolver.openOutputStream(fileUri)?.use { output ->
+                    inputStream.copyTo(output)
+                }
+                outputWritten = true
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(fileUri, values, null, null)
+                break
+            } catch (e: Exception) {
+                // This should rarely happen but if it's UNIQUE constraint, try a new name
+                if (e.message?.contains("UNIQUE constraint failed") == true) {
+                    attempt++
+                    uniqueName = getUniqueFilename(context, filename, isLegacy = false)
+                    continue
+                } else {
+                    e.printStackTrace()
+                    break
                 }
             }
-            values.clear()
-            values.put(MediaStore.Downloads.IS_PENDING, 0)
-            resolver.update(fileUri, values, null, null)
-            return fileUri.toString()
         } else {
-            // Last resort: MediaStore may still have a ghost file; check if file now exists
-            val cursor = resolver.query(
-                collection,
-                arrayOf(MediaStore.Downloads._ID),
-                "${MediaStore.Downloads.DISPLAY_NAME}=?",
-                arrayOf(filename),
-                null
-            )
-            val exists = cursor?.moveToFirst() == true
-            cursor?.close()
-            return if (exists) "mediastore://found/$filename" else null
+            // Could not insert. Maybe name in use, try new
+            attempt++
+            uniqueName = getUniqueFilename(context, filename, isLegacy = false)
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
-        // Last resort: MediaStore error, but maybe file is present
-        val cursor = resolver.query(
-            collection,
-            arrayOf(MediaStore.Downloads._ID),
-            "${MediaStore.Downloads.DISPLAY_NAME}=?",
-            arrayOf(filename),
-            null
-        )
-        val exists = cursor?.moveToFirst() == true
-        cursor?.close()
-        return if (exists) "mediastore://found/$filename" else null
+    }
+
+    return if (outputWritten && fileUri != null) {
+        Pair(fileUri.toString(), uniqueName)
+    } else {
+        Pair(null, null)
     }
 }
 
-
-private fun saveToDownloadsLegacy(
+fun saveToDownloadsLegacyUnique(
     context: Context,
     filename: String,
     inputStream: InputStream
-): String? {
+): Pair<String?, String?> {
     val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     if (!downloadsDir.exists()) downloadsDir.mkdirs()
-    val outFile = File(downloadsDir, filename)
-    if (outFile.exists()) outFile.delete()
+    val uniqueName = getUniqueFilename(context, filename, isLegacy = true)
+    val outFile = File(downloadsDir, uniqueName)
     return try {
         inputStream.use { input ->
             outFile.outputStream().use { output ->
@@ -1045,10 +1000,10 @@ private fun saveToDownloadsLegacy(
                 }
             }
         }
-        outFile.absolutePath
+        Pair(outFile.absolutePath, uniqueName)
     } catch (e: Exception) {
         e.printStackTrace()
-        null
+        Pair(null, null)
     }
 }
 
@@ -1197,15 +1152,15 @@ fun downloadFileFromClipboard(
                 val decryptedStream = CipherInputStream(b64Stream, cipher)
 
                 val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
-                val savedPath: String? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    saveToDownloadsQAndAbove(context, filename, mimeType, decryptedStream, -1)
+                val (savedPath, actualName) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    saveToDownloadsQAndAboveUnique(context, filename, mimeType, decryptedStream, -1)
                 } else {
-                    saveToDownloadsLegacy(context, filename, decryptedStream)
+                    saveToDownloadsLegacyUnique(context, filename, decryptedStream)
                 }
                 Handler(Looper.getMainLooper()).post {
                     if (savedPath != null) {
-                        Toast.makeText(context, "✅ File downloaded: $filename", Toast.LENGTH_SHORT).show()
-                        showDownloadNotification(context, savedPath, filename, mimeType)
+                        Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
+                        showDownloadNotification(context, savedPath, actualName ?: filename, mimeType)
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                     }
