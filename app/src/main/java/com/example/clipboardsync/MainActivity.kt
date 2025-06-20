@@ -172,6 +172,11 @@ fun ClipboardSyncApp() {
     val context = LocalContext.current
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+    // --- USE MutableState for history so you can pass it to helpers ---
+    val historyState = remember { mutableStateOf(loadHistory(prefs)) }
+    val history = historyState.value
+
     var downloadingCount by remember { mutableStateOf(0) }
     val isDownloading = downloadingCount > 0
     var uploadingCount by remember { mutableStateOf(0) }
@@ -179,19 +184,37 @@ fun ClipboardSyncApp() {
     var showFileDialog by remember { mutableStateOf(false) }
     var lastText by remember { mutableStateOf("") }
     var ipAddress by remember { mutableStateOf(prefs.getString("server_ip", "") ?: "") }
-    var history by remember { mutableStateOf(loadHistory(prefs)) }
     var isConnected by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf(prefs.getString("server_password", "") ?: "") }
     var availableFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     val ip = prefs.getString("server_ip", "") ?: ""
     var clipboardHistory by remember { mutableStateOf(listOf<String>()) }
-
-    // Overlay toggle state
+    var selectedItem by remember { mutableStateOf<String?>(null) }
+    var passwordVisible by remember { mutableStateOf(false) }
     var overlayEnabled by remember { mutableStateOf(prefs.getBoolean("overlay_enabled", true)) }
-
-    // PROGRESS STATES
     var uploadProgress by remember { mutableStateOf<Float?>(null) }
     var downloadProgress by remember { mutableStateOf<Float?>(null) }
+    val buttonColor = Color(0xFF546E7A)
+    val buttonTextColor = Color.White
+
+    fun savePassword(pass: String) = prefs.edit().putString("server_password", pass).apply()
+    fun saveIp(ip: String) = prefs.edit().putString("server_ip", ip).apply()
+
+    fun addToHistory(text: String) {
+        val newHistory = listOf(text) + historyState.value.filterNot { it == text }
+        historyState.value = newHistory.take(50)
+        prefs.edit().putString("clipboard_history", JSONArray(newHistory).toString()).apply()
+    }
+    fun addFileToHistory(filename: String, direction: String) {
+        val entry = if (direction == "Uploaded") "⬆️ File uploaded: $filename"
+        else "⬇️ File downloaded: $filename"
+        addToHistory(entry)
+    }
+    fun deleteFromHistory(item: String) {
+        val newHistory = historyState.value.filterNot { it == item }
+        historyState.value = newHistory
+        prefs.edit().putString("clipboard_history", JSONArray(newHistory).toString()).apply()
+    }
 
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -207,27 +230,13 @@ fun ClipboardSyncApp() {
                         else -> 0
                     }
                 },
-                onProgress = { progress -> uploadProgress = progress }
+                onProgress = { progress -> uploadProgress = progress },
+                onHistory = { filename ->
+                    addFileToHistory(filename, "Uploaded")
+                }
             )
         }
     }
-    val buttonColor = Color(0xFF546E7A)
-    val buttonTextColor = Color.White
-
-    fun savePassword(pass: String) = prefs.edit().putString("server_password", pass).apply()
-    fun saveIp(ip: String) = prefs.edit().putString("server_ip", ip).apply()
-
-    fun addToHistory(text: String) {
-        val newHistory = listOf(text) + history.filterNot { it == text }
-        history = newHistory.take(50)
-        prefs.edit().putString("clipboard_history", JSONArray(newHistory).toString()).apply()
-    }
-
-    fun deleteFromHistory(item: String) {
-        history = history.filterNot { it == item }
-        prefs.edit().putString("clipboard_history", JSONArray(history).toString()).apply()
-    }
-
     // Helper function to start overlay service
     fun Context.startOverlayService() {
         val intent = Intent(this, OverlayService::class.java)
@@ -273,8 +282,6 @@ fun ClipboardSyncApp() {
         onDispose { clipboardManager.removePrimaryClipChangedListener(listener) }
     }
 
-    var selectedItem by remember { mutableStateOf<String?>(null) }
-    var passwordVisible by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -455,6 +462,8 @@ fun ClipboardSyncApp() {
                     downloadingCount += 1
                     fetchClipboardFromServer(
                         context = context,
+                        prefs = prefs,
+                        historyState = historyState,
                         ip = ipAddress,
                         password = password,
                         clipboardManager = clipboardManager,
@@ -546,7 +555,8 @@ fun ClipboardSyncApp() {
                 .fillMaxSize()
                 .padding(top = 2.dp)
         ) {
-            items(history) { item ->
+            items(historyState.value) { item ->
+                val isFileHistory = item.startsWith("⬆️ File uploaded:") || item.startsWith("⬇️ File downloaded:")
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -562,13 +572,16 @@ fun ClipboardSyncApp() {
                         modifier = Modifier.weight(1f)
                     )
                     Row {
-                        IconButton(onClick = {
-                            val clip = ClipData.newPlainText("Copied", item)
-                            clipboardManager.setPrimaryClip(clip)
-                            Toast.makeText(context, "📋 Copied to clipboard", Toast.LENGTH_SHORT)
-                                .show()
-                        }) {
-                            Text("📋", color = Color.White)
+                        // Only show copy button for non-file entries
+                        if (!isFileHistory) {
+                            IconButton(onClick = {
+                                val clip = ClipData.newPlainText("Copied", item)
+                                clipboardManager.setPrimaryClip(clip)
+                                Toast.makeText(context, "📋 Copied to clipboard", Toast.LENGTH_SHORT)
+                                    .show()
+                            }) {
+                                Text("📋", color = Color.White)
+                            }
                         }
                         IconButton(onClick = { deleteFromHistory(item) }) {
                             Text("🗑️", color = Color.White)
@@ -720,6 +733,28 @@ fun Context.startOverlayService() {
         startService(intent)
     }
 }
+
+fun addToHistory(
+    prefs: SharedPreferences,
+    historyState: MutableState<List<String>>,
+    text: String
+) {
+    val newHistory = listOf(text) + historyState.value.filterNot { it == text }
+    historyState.value = newHistory.take(50)
+    prefs.edit().putString("clipboard_history", JSONArray(newHistory).toString()).apply()
+}
+
+fun addFileToHistory(
+    prefs: SharedPreferences,
+    historyState: MutableState<List<String>>,
+    filename: String,
+    direction: String
+) {
+    val entry = if (direction == "Uploaded") "⬆️ File uploaded: $filename"
+    else "⬇️ File downloaded: $filename"
+    addToHistory(prefs, historyState, entry)
+}
+
 fun showDownloadNotification(context: Context, filePathOrUri: String, filename: String, mimeType: String) {
     val channelId = "clipboard_download_channel"
     val notificationId = 1001
@@ -847,13 +882,16 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
+// Here is the revised uploadFileToServer function, with temp file cleanup added.
+
 fun uploadFileToServer(
     context: Context,
     uri: Uri,
     ip: String,
     password: String,
     onUploadingChanged: (Boolean) -> Unit,
-    onProgress: (Float?) -> Unit = {} // <-- already present in your code
+    onProgress: (Float?) -> Unit = {},
+    onHistory: ((String) -> Unit)? = null // <-- new optional parameter
 ) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
@@ -895,6 +933,7 @@ fun uploadFileToServer(
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
+                tempFile.delete() // <-- Clean up!
                 Toast.makeText(context, "❌ Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
                 onUploadingChanged(false)
                 onProgress(null)
@@ -903,8 +942,10 @@ fun uploadFileToServer(
 
         override fun onResponse(call: Call, response: Response) {
             Handler(Looper.getMainLooper()).post {
+                tempFile.delete() // <-- Clean up!
                 if (response.isSuccessful) {
                     Toast.makeText(context, "✅ File uploaded successfully", Toast.LENGTH_SHORT).show()
+                    onHistory?.invoke(fileName) // <-- Add to history
                 } else {
                     Toast.makeText(context, "⚠️ Upload failed: ${response.code}", Toast.LENGTH_SHORT).show()
                 }
@@ -971,7 +1012,8 @@ fun downloadFileFromServer(
     ip: String,
     password: String,
     onComplete: () -> Unit = {},
-    onProgress: (Float?) -> Unit = {}   // <-- new parameter
+    onProgress: (Float?) -> Unit = {},
+    onHistory: ((String) -> Unit)? = null // <-- new optional parameter
 ) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
@@ -1019,8 +1061,6 @@ fun downloadFileFromServer(
                 }
                 val contentLength = body.contentLength().takeIf { it > 0 }
                 val inputStream = progressBody.byteStream()
-
-
                 val mimeType = URLConnection.guessContentTypeFromName(filename)
                     ?: "application/octet-stream"
 
@@ -1052,6 +1092,7 @@ fun downloadFileFromServer(
                         Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
                         Log.d("ClipboardSync", "Download handler completed for $filename, savedPath=$savedPath, actualName=$actualName")
                         showDownloadNotification(context, savedPath, actualName ?: filename, mimeType)
+                        onHistory?.invoke(actualName ?: filename) // <-- Add to history
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                     }
@@ -1275,12 +1316,14 @@ fun sendToServer(context: Context, text: String, ip: String, password: String, o
 
 fun fetchClipboardFromServer(
     context: Context,
+    prefs: SharedPreferences,
+    historyState: MutableState<List<String>>,
     ip: String,
     password: String,
     clipboardManager: ClipboardManager,
     addToHistory: (String) -> Unit,
     onComplete: () -> Unit,
-    onProgress: (Float?) -> Unit = {} // <-- Add this parameter
+    onProgress: (Float?) -> Unit = {}
 ) {
     val request = Request.Builder()
         .url("http://$ip:8000/clipboard")
@@ -1314,13 +1357,17 @@ fun fetchClipboardFromServer(
 
                 if (isFile) {
                     val filename = json.optString("filename", "fetched_file")
+                    // PATCHED: Add onHistory!!
                     downloadFileFromClipboard(
                         context,
                         ip,
                         password,
                         filename,
                         onComplete = onComplete,
-                        onProgress = onProgress // <-- Pass it here
+                        onProgress = onProgress,
+                        onHistory = { fetchedFile ->
+                            addFileToHistory(prefs, historyState, fetchedFile, "Downloaded")
+                        }
                     )
                 } else {
                     val encryptedText = json.getString("clipboard")
@@ -1342,7 +1389,8 @@ fun downloadFileFromClipboard(
     password: String,
     filename: String,
     onComplete: () -> Unit,
-    onProgress: (Float?) -> Unit = {}
+    onProgress: (Float?) -> Unit = {},
+    onHistory: ((String) -> Unit)? = null // <-- New parameter
 ) {
     Log.d("ClipboardSync", "downloadFileFromClipboard CALLED for $filename")
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1383,7 +1431,6 @@ fun downloadFileFromClipboard(
                 val progressBody = ProgressResponseBody(body) { progress ->
                     Handler(Looper.getMainLooper()).post { onProgress(progress) }
                 }
-                val contentLength = body.contentLength().takeIf { it > 0 }
                 val inputStream = progressBody.byteStream()
 
                 val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
@@ -1416,6 +1463,7 @@ fun downloadFileFromClipboard(
                         Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
                         Log.d("ClipboardSync", "Download handler completed for $filename, savedPath=$savedPath, actualName=$actualName")
                         showDownloadNotification(context, savedPath, actualName ?: filename, mimeType)
+                        onHistory?.invoke(actualName ?: filename) // <-- LOG TO HISTORY HERE
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
                     }
@@ -1438,13 +1486,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         startOverlayService() // Always start the service, regardless of overlay_enabled
         requestNotificationPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
+
         ) { isGranted: Boolean ->
             // You can show a toast here or log if you want
         }
-
+        if (intent?.getBooleanExtra("sendFileNow", false) == true) {
+            // Trigger your file picker / launcher logic here
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
@@ -1473,8 +1525,12 @@ class MainActivity : ComponentActivity() {
             Handler(Looper.getMainLooper()).postDelayed({
                 val clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val password = prefs.getString("server_password", "") ?: ""
+                // CREATE A THROWAWAY HISTORY STATE
+                val dummyHistoryState = mutableStateOf(loadHistory(prefs))
                 fetchClipboardFromServer(
                     context = this,
+                    prefs = prefs,
+                    historyState = dummyHistoryState,
                     ip = prefs.getString("server_ip", "") ?: "",
                     password = password,
                     clipboardManager = clipboardManager,
@@ -1482,7 +1538,6 @@ class MainActivity : ComponentActivity() {
                     onComplete = { /* Optionally show a notification here if desired */ },
                     onProgress = {}
                 )
-                // Minimize the app right after starting fetch (don't wait for onComplete)
                 moveTaskToBack(true)
                 intent.removeExtra("fetchNow")
             }, 50)

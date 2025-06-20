@@ -207,12 +207,23 @@ class OverlayService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or
                     if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
         )
+        // 1. Send File Intent & PendingIntent
+        val sendFileIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("sendFileNow", true)
+        }
+        val sendFilePendingIntent = PendingIntent.getActivity(
+            this, 102, sendFileIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        )
 
         return NotificationCompat.Builder(this, "clipboard_channel")
             .setContentTitle("Clipboard Sync Running")
             .setSmallIcon(R.drawable.ic_clipboard_sync)
-            .addAction(R.drawable.ic_clipboard_sync, "Sync Clipboard", syncPendingIntent)
-            .addAction(R.drawable.ic_clipboard_sync, "Fetch Clipboard", fetchPendingIntent)
+            .addAction(R.drawable.ic_clipboard_sync, "Sync", syncPendingIntent)
+            .addAction(R.drawable.ic_clipboard_sync, "Fetch", fetchPendingIntent)
+            .addAction(R.drawable.ic_clipboard_sync, "Send File", sendFilePendingIntent) // <--- NEW ACTION
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .build()
