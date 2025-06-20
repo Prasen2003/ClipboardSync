@@ -62,7 +62,10 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import java.security.MessageDigest
 import android.util.Base64
-
+import java.security.SecureRandom
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.PBEKeySpec
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -328,13 +331,14 @@ fun ClipboardSyncApp() {
 
             Button(
                 onClick = {
+                    downloadingCount += 1
                     fetchClipboardFromServer(
                         context = context,
                         ip = ipAddress,
                         password = password,
                         clipboardManager = clipboardManager,
                         addToHistory = { text -> clipboardHistory = clipboardHistory + text },
-                        onComplete = { /* you can show a Toast or UI update if needed */ }
+                        onComplete = { downloadingCount = maxOf(downloadingCount - 1, 0) }
                     )
                 },
                 modifier = Modifier.weight(1f),
@@ -467,40 +471,81 @@ fun ClipboardSyncApp() {
         )
     }
 }
-fun encryptAES(text: String, password: String): String {
-    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
-    val secretKey = SecretKeySpec(key, "AES")
-    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-    cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+// --- CONFIG --- //
+private const val PBKDF2_ITERATIONS = 10000
+private const val KEY_LENGTH = 256 // bits
+private const val SALT_SIZE = 16   // bytes
+private const val IV_SIZE = 16     // bytes
+
+// --- KEY DERIVATION --- //
+private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
+    val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+    val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH)
+    val tmp = factory.generateSecret(spec)
+    return SecretKeySpec(tmp.encoded, "AES")
+}
+
+// --- RANDOM GENERATORS --- //
+private fun randomBytes(size: Int): ByteArray {
+    val bytes = ByteArray(size)
+    SecureRandom().nextBytes(bytes)
+    return bytes
+}
+
+// --- SECURE ENCRYPTION FOR TEXT --- //
+fun encryptAESCBC(text: String, password: String): String {
+    val salt = randomBytes(SALT_SIZE)
+    val iv = randomBytes(IV_SIZE)
+    val key = deriveKey(password, salt)
+
+    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    cipher.init(Cipher.ENCRYPT_MODE, key, IvParameterSpec(iv))
     val encrypted = cipher.doFinal(text.toByteArray(Charsets.UTF_8))
-    return Base64.encodeToString(encrypted, Base64.NO_WRAP)
+    // Output: salt + iv + ciphertext (all base64 encoded)
+    val out = ByteArray(salt.size + iv.size + encrypted.size)
+    System.arraycopy(salt, 0, out, 0, salt.size)
+    System.arraycopy(iv, 0, out, salt.size, iv.size)
+    System.arraycopy(encrypted, 0, out, salt.size + iv.size, encrypted.size)
+    return Base64.encodeToString(out, Base64.NO_WRAP)
 }
 
-fun decryptAES(encrypted: String, password: String): String {
-    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
-    val secretKey = SecretKeySpec(key, "AES")
-    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-    cipher.init(Cipher.DECRYPT_MODE, secretKey)
+fun decryptAESCBC(encrypted: String, password: String): String {
     val decoded = Base64.decode(encrypted, Base64.NO_WRAP)
-    return String(cipher.doFinal(decoded), Charsets.UTF_8)
+    val salt = decoded.copyOfRange(0, SALT_SIZE)
+    val iv = decoded.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
+    val ciphertext = decoded.copyOfRange(SALT_SIZE + IV_SIZE, decoded.size)
+    val key = deriveKey(password, salt)
+    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+    val decrypted = cipher.doFinal(ciphertext)
+    return String(decrypted, Charsets.UTF_8)
 }
 
-fun encryptFileBytes(data: ByteArray, password: String): ByteArray {
-    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
-    val secretKey = SecretKeySpec(key, "AES")
-    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-    cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-    return cipher.doFinal(data)
+// --- SECURE ENCRYPTION FOR FILES (BYTES) --- //
+fun encryptFileBytesCBC(data: ByteArray, password: String): ByteArray {
+    val salt = randomBytes(SALT_SIZE)
+    val iv = randomBytes(IV_SIZE)
+    val key = deriveKey(password, salt)
+    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    cipher.init(Cipher.ENCRYPT_MODE, key, IvParameterSpec(iv))
+    val encrypted = cipher.doFinal(data)
+    // Output: salt + iv + ciphertext
+    val out = ByteArray(salt.size + iv.size + encrypted.size)
+    System.arraycopy(salt, 0, out, 0, salt.size)
+    System.arraycopy(iv, 0, out, salt.size, iv.size)
+    System.arraycopy(encrypted, 0, out, salt.size + iv.size, encrypted.size)
+    return out
 }
 
-fun decryptFileBytes(data: ByteArray, password: String): ByteArray {
-    val key = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
-    val secretKey = SecretKeySpec(key, "AES")
-    val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-    cipher.init(Cipher.DECRYPT_MODE, secretKey)
-    return cipher.doFinal(data)
+fun decryptFileBytesCBC(data: ByteArray, password: String): ByteArray {
+    val salt = data.copyOfRange(0, SALT_SIZE)
+    val iv = data.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
+    val ciphertext = data.copyOfRange(SALT_SIZE + IV_SIZE, data.size)
+    val key = deriveKey(password, salt)
+    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+    return cipher.doFinal(ciphertext)
 }
-
 fun pingServer(context: Context, ip: String, password: String, onResult: (Boolean) -> Unit) {
     if (ip.isBlank()) {
         onResult(false)
@@ -598,7 +643,7 @@ fun uploadFileToServer(context: Context,
     inputStream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
 
     val fileBytes = tempFile.readBytes()
-    val encryptedBytes = encryptFileBytes(fileBytes, password)
+    val encryptedBytes = encryptFileBytesCBC(fileBytes, password)
     tempFile.writeBytes(encryptedBytes)
 
     val fileBody = tempFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
@@ -770,7 +815,7 @@ fun downloadFileFromServer(
             val encryptedBytes = response.body!!.byteStream().readBytes()
 
             val decryptedBytes = try {
-                decryptFileBytes(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
+                decryptFileBytesCBC(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -809,8 +854,37 @@ fun downloadFileFromServer(
     })
 }
 
+private fun deleteAllDownloadsByNameBlocking(context: Context, fileName: String, timeoutMs: Long = 2000) {
+    // Only call this for API 29+
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
 
-// Only call this function if API >= Q
+    val resolver = context.contentResolver
+    val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    val startTime = System.currentTimeMillis()
+    while (true) {
+        var found = false
+        val cursor = resolver.query(
+            collection,
+            arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
+            "${MediaStore.Downloads.DISPLAY_NAME}=?",
+            arrayOf(fileName),
+            null
+        )
+        cursor?.use {
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+            while (cursor.moveToNext()) {
+                found = true
+                val id = cursor.getLong(idCol)
+                val uri = ContentUris.withAppendedId(collection, id)
+                resolver.delete(uri, null, null)
+            }
+        }
+        if (!found) break
+        if (System.currentTimeMillis() - startTime > timeoutMs) break
+        Thread.sleep(100)
+    }
+}
+
 private fun saveToDownloadsQAndAbove(
     context: Context,
     filename: String,
@@ -819,23 +893,17 @@ private fun saveToDownloadsQAndAbove(
     size: Long
 ): String? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-    return try {
-        val resolver = context.contentResolver
-        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        // Delete any file with same name first
-        resolver.delete(
-            collection,
-            "${MediaStore.Downloads.DISPLAY_NAME}=?",
-            arrayOf(filename)
-        )
-
+    val resolver = context.contentResolver
+    val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    try {
+        // Robust delete before insert, blocking until gone or timeout
+        deleteAllDownloadsByNameBlocking(context, filename)
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, filename)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
             put(MediaStore.Downloads.IS_PENDING, 1)
             put(MediaStore.Downloads.SIZE, size)
         }
-
         val fileUri = resolver.insert(collection, values)
         if (fileUri != null) {
             resolver.openOutputStream(fileUri)?.use { output ->
@@ -844,16 +912,36 @@ private fun saveToDownloadsQAndAbove(
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(fileUri, values, null, null)
-            fileUri.toString()
+            return fileUri.toString()
         } else {
-            null
+            // Last resort: MediaStore may still have a ghost file; check if file now exists
+            val cursor = resolver.query(
+                collection,
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME}=?",
+                arrayOf(filename),
+                null
+            )
+            val exists = cursor?.moveToFirst() == true
+            cursor?.close()
+            return if (exists) "mediastore://found/$filename" else null
         }
     } catch (e: Exception) {
         e.printStackTrace()
-        null
+        // Last resort: MediaStore error, but maybe file is present
+        val cursor = resolver.query(
+            collection,
+            arrayOf(MediaStore.Downloads._ID),
+            "${MediaStore.Downloads.DISPLAY_NAME}=?",
+            arrayOf(filename),
+            null
+        )
+        val exists = cursor?.moveToFirst() == true
+        cursor?.close()
+        return if (exists) "mediastore://found/$filename" else null
     }
 }
-// Legacy method for API < Q
+
 private fun saveToDownloadsLegacy(
     context: Context,
     filename: String,
@@ -861,7 +949,6 @@ private fun saveToDownloadsLegacy(
 ): String? {
     val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     if (!downloadsDir.exists()) downloadsDir.mkdirs()
-
     val outFile = File(downloadsDir, filename)
     if (outFile.exists()) outFile.delete()
     return try {
@@ -884,7 +971,7 @@ fun sendToServer(context: Context, text: String, ip: String, password: String, o
     }
 
     val client = OkHttpClient()
-     val encryptedText = encryptAES(text, password)
+     val encryptedText = encryptAESCBC(text, password)
      val requestBody = FormBody.Builder().add("clipboard", encryptedText).build()
 
      val request = Request.Builder()
@@ -959,7 +1046,7 @@ fun fetchClipboardFromServer(
                     downloadFileFromClipboard(context, ip, password, filename, onComplete)
                 } else {
                     val encryptedText = json.getString("clipboard")
-                    val text = decryptAES(encryptedText, password)
+                    val text = decryptAESCBC(encryptedText, password)
                     Handler(Looper.getMainLooper()).post {
                         clipboardManager.setPrimaryClip(ClipData.newPlainText("label", text))
                         addToHistory(text)
@@ -1001,7 +1088,7 @@ fun downloadFileFromClipboard(
             }
             val encryptedBytes = response.body!!.byteStream().readBytes()
             val decryptedBytes = try {
-                decryptFileBytes(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
+                decryptFileBytesCBC(Base64.decode(encryptedBytes, Base64.NO_WRAP), password)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -1021,33 +1108,8 @@ fun downloadFileFromClipboard(
             } else {
                 saveToDownloadsLegacy(context, filename, decryptedBytes.inputStream())
             }
-
-            // Extra robustness: check if file is there
-            val fileActuallyExists = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // For MediaStore, check via query (optional, but robust)
-                try {
-                    val resolver = context.contentResolver
-                    val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                    val cursor = resolver.query(
-                        collection,
-                        arrayOf(MediaStore.Downloads.DISPLAY_NAME),
-                        "${MediaStore.Downloads.DISPLAY_NAME}=?",
-                        arrayOf(filename),
-                        null
-                    )
-                    val exists = cursor?.moveToFirst() == true
-                    cursor?.close()
-                    exists
-                } catch (e: Exception) {
-                    false
-                }
-            } else {
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                File(downloadsDir, filename).exists()
-            }
-
             Handler(Looper.getMainLooper()).post {
-                if (savedPath != null || fileActuallyExists) {
+                if (savedPath != null) {
                     Toast.makeText(context, "✅ File downloaded: $filename", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()

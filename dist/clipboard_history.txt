@@ -1,5 +1,6 @@
 [
   "Toast",
+  "def derive_key(password: str, salt: bytes) -> bytes:\r\n    \"\"\"Derive a key from password and salt using PBKDF2 (HMAC-SHA256).\"\"\"\r\n    return PBKDF2(password, salt, dkLen=KEY_LEN, count=PBKDF2_ITER, hmac_hash_module=SHA256)",
   "paste",
   "\"clipboard\": encrypt_text(clipboard_text, PASSWORD),",
   "Fetch Clipboard",
@@ -17,6 +18,5 @@
   "fetchView = AppCompatImageView(this).apply {\r\n    setImageResource(R.drawable.ic_clipboard_sync)\r\n    isClickable = true\r\n    rotation = 180f // visually points downward\r\n}\r\n",
   "fetchView = AppCompatImageView(this).apply {\r\n    setImageResource(R.drawable.ic_clipboard_sync)\r\n    isClickable = true\r\n    rotation = 180f // visually points downward\r\n}",
   "mini",
-  "gemini",
-  "deepcool pl550d"
+  "gemini"
 ]

@@ -32,9 +32,20 @@ import Crypto
 from Crypto.Cipher import AES
 from hashlib import sha256
 import base64
+import os
+import base64
+from hashlib import sha256
+from Crypto.Hash import SHA256
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Random import get_random_bytes
 from fastapi.responses import Response
 
 # === Globals ===
+PBKDF2_ITER = 10000
+KEY_LEN = 32  # 256 bits
+SALT_SIZE = 16
+IV_SIZE = 16
 PASSWORD = "your_secure_password"
 UPLOAD_DIR = Path("received_files")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -367,8 +378,6 @@ def get_clipboard_file_path():
 @app.get("/clipboard")
 async def get_clipboard(request: Request):
     check_password(request)
-
-    # Try file path first
     clipboard_file = get_clipboard_file_path()
     if clipboard_file and os.path.isfile(clipboard_file):
         return {
@@ -377,8 +386,6 @@ async def get_clipboard(request: Request):
             "is_file": True,
             "filename": os.path.basename(clipboard_file)
         }
-
-    # Fallback to text
     clipboard_text = pyperclip.paste()
     return {
         "status": "sent",
@@ -393,34 +400,24 @@ async def set_clipboard(request: Request):
     encrypted_clipboard = form.get("clipboard", "")
     clipboard = decrypt_text(encrypted_clipboard, PASSWORD)
     pyperclip.copy(clipboard)
-
     if clipboard.strip():
         add_to_history(clipboard)
-
     return {"status": "received", "clipboard": clipboard}
-
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...), x_auth_token: str = Header(None)):
     if x_auth_token != PASSWORD:
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     save_path = Path("received_files")
     save_path.mkdir(parents=True, exist_ok=True)
-
     safe_filename = sanitize_filename(file.filename or "uploaded_file")
     file_path = save_path / safe_filename
-
     content = await file.read()
-    decrypted_content = AES.new(get_aes_key(PASSWORD), AES.MODE_ECB).decrypt(content)
-    decrypted_content = unpad_data(decrypted_content)
-
+    decrypted_content = decrypt_file_bytes(content, PASSWORD)
     print(f"📁 Saving file: {file_path}")
     print(f"📦 Received size: {len(content)} bytes")
-
     with open(file_path, "wb") as f:
         f.write(decrypted_content)
-        
     return {"status": "success", "filename": safe_filename}
 
 @app.get("/list-files")
@@ -438,25 +435,18 @@ def list_files(x_auth_token: str = Header(None)):
 def download_clipboard_file(x_auth_token: str = Header(None)):
     if x_auth_token != PASSWORD:
         raise HTTPException(status_code=401, detail="Invalid password")
-
     clipboard = get_clipboard_file_path()
     print(f"📋 File path from clipboard: {clipboard}")
     print(f"📋 Clipboard content: {clipboard}")
-
     if not os.path.isfile(clipboard):
         print("❌ Clipboard does not contain a valid file path")
         raise HTTPException(status_code=404, detail="Clipboard does not contain a valid file")
-
     try:
         with open(clipboard, "rb") as f:
             raw = f.read()
-
-        padded = pad_data(raw)
-        encrypted = AES.new(get_aes_key(PASSWORD), AES.MODE_ECB).encrypt(padded)
+        encrypted = encrypt_file_bytes(raw, PASSWORD)
         encoded = base64.b64encode(encrypted)
-
         return Response(content=encoded, media_type="application/octet-stream")
-
     except Exception as e:
         print(f"❌ Error serving clipboard file: {e}")
         raise HTTPException(status_code=500, detail="Failed to send file")
@@ -466,19 +456,13 @@ def download_clipboard_file(x_auth_token: str = Header(None)):
 def download_file(filename: str, x_auth_token: str = Header(None)):
     if x_auth_token != PASSWORD:
         raise HTTPException(status_code=401, detail="Invalid password")
-
     file_path = os.path.join(UPLOAD_DIR, filename)
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
-
     with open(file_path, "rb") as f:
         raw = f.read()
-
-    padded = pad_data(raw)  # Ensure AES-compatible block size
-    cipher = AES.new(get_aes_key(PASSWORD), AES.MODE_ECB)
-    encrypted = cipher.encrypt(padded)
+    encrypted = encrypt_file_bytes(raw, PASSWORD)
     encoded = base64.b64encode(encrypted)
-
     return Response(content=encoded, media_type="application/octet-stream")
 
 
@@ -541,21 +525,53 @@ def unpad_data(data: bytes) -> bytes:
     pad_len = data[-1]
     return data[:-pad_len]
 
+def encrypt_file_bytes(data: bytes, password: str) -> bytes:
+    salt = get_random_bytes(SALT_SIZE)
+    iv = get_random_bytes(IV_SIZE)
+    key = derive_key(password.encode(), salt)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    pad_len = 16 - len(data) % 16
+    padded = data + bytes([pad_len] * pad_len)
+    encrypted = cipher.encrypt(padded)
+    return salt + iv + encrypted
+
+def decrypt_file_bytes(data: bytes, password: str) -> bytes:
+    salt = data[:SALT_SIZE]
+    iv = data[SALT_SIZE:SALT_SIZE+IV_SIZE]
+    ciphertext = data[SALT_SIZE+IV_SIZE:]
+    key = derive_key(password.encode(), salt)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    decrypted = cipher.decrypt(ciphertext)
+    pad_len = decrypted[-1]
+    return decrypted[:-pad_len]
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """Derive a key from password and salt using PBKDF2 (HMAC-SHA256)."""
+    return PBKDF2(password, salt, dkLen=KEY_LEN, count=PBKDF2_ITER, hmac_hash_module=SHA256)
+
 def get_aes_key(password: str) -> bytes:
     return sha256(password.encode()).digest()
 
 def encrypt_text(text: str, password: str) -> str:
-    key = get_aes_key(password)
-    cipher = AES.new(key, AES.MODE_ECB)
-    padded = text + chr(16 - len(text) % 16) * (16 - len(text) % 16)
-    encrypted = cipher.encrypt(padded.encode("utf-8"))
-    return base64.b64encode(encrypted).decode("utf-8")
+    salt = get_random_bytes(SALT_SIZE)
+    iv = get_random_bytes(IV_SIZE)
+    key = derive_key(password.encode(), salt)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    data = text.encode("utf-8")
+    pad_len = 16 - len(data) % 16
+    padded = data + bytes([pad_len] * pad_len)
+    encrypted = cipher.encrypt(padded)
+    out = salt + iv + encrypted
+    return base64.b64encode(out).decode("utf-8")
 
 def decrypt_text(encrypted_text: str, password: str) -> str:
-    key = get_aes_key(password)
-    cipher = AES.new(key, AES.MODE_ECB)
-    decoded = base64.b64decode(encrypted_text)
-    decrypted = cipher.decrypt(decoded)
+    raw = base64.b64decode(encrypted_text)
+    salt = raw[:SALT_SIZE]
+    iv = raw[SALT_SIZE:SALT_SIZE+IV_SIZE]
+    ciphertext = raw[SALT_SIZE+IV_SIZE:]
+    key = derive_key(password.encode(), salt)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    decrypted = cipher.decrypt(ciphertext)
     pad_len = decrypted[-1]
     return decrypted[:-pad_len].decode("utf-8")
 
