@@ -78,7 +78,8 @@ import androidx.core.app.ActivityCompat
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.activity.result.ActivityResultLauncher
-
+import android.util.Log
+import java.io.FileOutputStream
 
 @Composable
 fun ClipboardSyncApp() {
@@ -818,6 +819,15 @@ fun downloadFileFromServer(
         onComplete()
         return
     }
+    Log.d("ClipboardSync", "downloadFileFromServer CALLED for $filename")
+    // CLEANUP: Remove all possible previous MediaStore entries for this filename and up to 9 suffixes
+    val baseName = filename.substringBeforeLast('.')
+    val ext = filename.substringAfterLast('.', "")
+    val suffixes = listOf("") + (1..9).map { " ($it)" }
+    for (suffix in suffixes) {
+        val name = if (ext.isNotEmpty()) "$baseName$suffix.$ext" else "$baseName$suffix"
+        deleteAllMediaStoreDownloadsByName(context, name)
+    }
 
     val client = OkHttpClient()
     val request = Request.Builder()
@@ -842,36 +852,37 @@ fun downloadFileFromServer(
                 return
             }
             try {
-                val encryptedStream = response.body!!.byteStream()
-                // --- Patch: decode base64 on the fly ---
-                val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
-
-                // Read salt + iv headers (first 32 bytes) from the decoded stream
-                val header = ByteArray(SALT_SIZE + IV_SIZE)
-                var read = 0
-                while (read < header.size) {
-                    val r = b64Stream.read(header, read, header.size - read)
-                    if (r == -1) throw IOException("Unexpected EOF in header")
-                    read += r
-                }
-                val salt = header.copyOfRange(0, SALT_SIZE)
-                val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
-                val key = deriveKey(password, salt)
-                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-                cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
-                val decryptedStream = CipherInputStream(b64Stream, cipher)
-
+                val encryptedBytes = response.body!!.bytes()
                 val mimeType = URLConnection.guessContentTypeFromName(filename)
                     ?: "application/octet-stream"
 
+                fun createDecryptedStream(): InputStream {
+                    val encryptedStream = encryptedBytes.inputStream()
+                    val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
+                    val header = ByteArray(SALT_SIZE + IV_SIZE)
+                    var read = 0
+                    while (read < header.size) {
+                        val r = b64Stream.read(header, read, header.size - read)
+                        if (r == -1) throw IOException("Unexpected EOF in header")
+                        read += r
+                    }
+                    val salt = header.copyOfRange(0, SALT_SIZE)
+                    val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
+                    val key = deriveKey(password, salt)
+                    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                    cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+                    return CipherInputStream(b64Stream, cipher)
+                }
+
                 val (savedPath, actualName) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    saveToDownloadsQAndAboveUnique(context, filename, mimeType, decryptedStream, -1)
+                    saveToDownloadsQAndAboveUnique(context, filename, mimeType, ::createDecryptedStream, -1)
                 } else {
-                    saveToDownloadsLegacyUnique(context, filename, decryptedStream)
+                    saveToDownloadsLegacyUnique(context, filename, createDecryptedStream())
                 }
                 Handler(Looper.getMainLooper()).post {
                     if (savedPath != null) {
                         Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
+                        Log.d("ClipboardSync", "Download handler completed for $filename, savedPath=$savedPath, actualName=$actualName")
                         showDownloadNotification(context, savedPath, actualName ?: filename, mimeType)
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
@@ -921,23 +932,46 @@ fun getUniqueFilename(context: Context, filename: String, isLegacy: Boolean): St
         n++
     }
 }
-
+fun deleteAllMediaStoreDownloadsByName(context: Context, fileName: String) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val cursor = resolver.query(
+            collection,
+            arrayOf(MediaStore.Downloads._ID),
+            "${MediaStore.Downloads.DISPLAY_NAME}=?",
+            arrayOf(fileName),
+            null
+        )
+        cursor?.use {
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idCol)
+                val uri = ContentUris.withAppendedId(collection, id)
+                resolver.delete(uri, null, null)
+            }
+        }
+    }
+}
 fun saveToDownloadsQAndAboveUnique(
     context: Context,
     filename: String,
     mimeType: String,
-    inputStream: InputStream,
+    inputStreamFn: () -> InputStream,
     size: Long
 ): Pair<String?, String?> {
     val resolver = context.contentResolver
     val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-
-    var uniqueName = getUniqueFilename(context, filename, isLegacy = false)
+    val base = filename.substringBeforeLast('.')
+    val ext = filename.substringAfterLast('.', "")
+    var n = 0
+    var uniqueName = filename
     var attempt = 0
     var fileUri: Uri? = null
     var outputWritten = false
 
-    while (attempt < 10) { // don't loop forever
+    while (attempt < 10) {
+        Log.d("ClipboardSync", "Attempt $attempt: Trying to save as $uniqueName")
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, uniqueName)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
@@ -945,22 +979,36 @@ fun saveToDownloadsQAndAboveUnique(
             if (size > 0) put(MediaStore.Downloads.SIZE, size)
         }
         fileUri = resolver.insert(collection, values)
-
         if (fileUri != null) {
             try {
-                resolver.openOutputStream(fileUri)?.use { output ->
-                    inputStream.copyTo(output)
+                inputStreamFn().use { input ->
+                    resolver.openOutputStream(fileUri)?.use { output ->
+                        input.copyTo(output)
+                    } ?: throw IOException("Output stream null")
                 }
                 outputWritten = true
+                Log.d("ClipboardSync", "SUCCESS: File written as $uniqueName")
                 values.clear()
                 values.put(MediaStore.Downloads.IS_PENDING, 0)
                 resolver.update(fileUri, values, null, null)
                 break
             } catch (e: Exception) {
-                // This should rarely happen but if it's UNIQUE constraint, try a new name
+                Log.e("ClipboardSync", "EXCEPTION: ${e.message}")
+                // Always try to delete the just-created file from MediaStore
+                try { resolver.delete(fileUri, null, null) } catch (_: Exception) {}
+
+                // Try to delete the physical file at the content Uri (best effort)
+                try {
+                    resolver.openFileDescriptor(fileUri!!, "w")?.use {
+                        FileOutputStream(it.fileDescriptor).channel.truncate(0)
+                    }
+                    Log.d("ClipboardSync", "Truncated file at $fileUri after update failure")
+                } catch (_: Exception) {}
+
                 if (e.message?.contains("UNIQUE constraint failed") == true) {
                     attempt++
-                    uniqueName = getUniqueFilename(context, filename, isLegacy = false)
+                    n++
+                    uniqueName = if (ext.isNotEmpty()) "$base ($n).$ext" else "$base ($n)"
                     continue
                 } else {
                     e.printStackTrace()
@@ -968,12 +1016,12 @@ fun saveToDownloadsQAndAboveUnique(
                 }
             }
         } else {
-            // Could not insert. Maybe name in use, try new
             attempt++
-            uniqueName = getUniqueFilename(context, filename, isLegacy = false)
+            n++
+            uniqueName = if (ext.isNotEmpty()) "$base ($n).$ext" else "$base ($n)"
         }
     }
-
+    Log.d("ClipboardSync", "Returning from saveToDownloadsQAndAboveUnique: outputWritten=$outputWritten, fileUri=$fileUri, uniqueName=$uniqueName")
     return if (outputWritten && fileUri != null) {
         Pair(fileUri.toString(), uniqueName)
     } else {
@@ -1109,7 +1157,18 @@ fun downloadFileFromClipboard(
     password: String,
     filename: String,
     onComplete: () -> Unit
-) {
+) {Log.d("ClipboardSync", "downloadFileFromClipboard CALLED for $filename")
+    // CLEANUP: Remove all possible previous MediaStore entries for this filename and up to 9 suffixes
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val baseName = filename.substringBeforeLast('.')
+        val ext = filename.substringAfterLast('.', "")
+        val suffixes = listOf("") + (1..9).map { " ($it)" }
+        for (suffix in suffixes) {
+            val name = if (ext.isNotEmpty()) "$baseName$suffix.$ext" else "$baseName$suffix"
+            deleteAllMediaStoreDownloadsByName(context, name)
+        }
+    }
+
     val request = Request.Builder()
         .url("http://$ip:8000/download_clipboard_file")
         .get()
@@ -1132,34 +1191,36 @@ fun downloadFileFromClipboard(
                 return
             }
             try {
-                val encryptedStream = response.body!!.byteStream()
-                // --- Patch: decode base64 on the fly ---
-                val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
-
-                // Read salt + iv headers (first 32 bytes) from the decoded stream
-                val header = ByteArray(SALT_SIZE + IV_SIZE)
-                var read = 0
-                while (read < header.size) {
-                    val r = b64Stream.read(header, read, header.size - read)
-                    if (r == -1) throw IOException("Unexpected EOF in header")
-                    read += r
-                }
-                val salt = header.copyOfRange(0, SALT_SIZE)
-                val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
-                val key = deriveKey(password, salt)
-                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-                cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
-                val decryptedStream = CipherInputStream(b64Stream, cipher)
-
+                val encryptedBytes = response.body!!.bytes()
                 val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
+
+                fun createDecryptedStream(): InputStream {
+                    val encryptedStream = encryptedBytes.inputStream()
+                    val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
+                    val header = ByteArray(SALT_SIZE + IV_SIZE)
+                    var read = 0
+                    while (read < header.size) {
+                        val r = b64Stream.read(header, read, header.size - read)
+                        if (r == -1) throw IOException("Unexpected EOF in header")
+                        read += r
+                    }
+                    val salt = header.copyOfRange(0, SALT_SIZE)
+                    val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
+                    val key = deriveKey(password, salt)
+                    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                    cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+                    return CipherInputStream(b64Stream, cipher)
+                }
+
                 val (savedPath, actualName) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    saveToDownloadsQAndAboveUnique(context, filename, mimeType, decryptedStream, -1)
+                    saveToDownloadsQAndAboveUnique(context, filename, mimeType, ::createDecryptedStream, -1)
                 } else {
-                    saveToDownloadsLegacyUnique(context, filename, decryptedStream)
+                    saveToDownloadsLegacyUnique(context, filename, createDecryptedStream())
                 }
                 Handler(Looper.getMainLooper()).post {
                     if (savedPath != null) {
                         Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
+                        Log.d("ClipboardSync", "Download handler completed for $filename, savedPath=$savedPath, actualName=$actualName")
                         showDownloadNotification(context, savedPath, actualName ?: filename, mimeType)
                     } else {
                         Toast.makeText(context, "❌ Failed to save file", Toast.LENGTH_LONG).show()
