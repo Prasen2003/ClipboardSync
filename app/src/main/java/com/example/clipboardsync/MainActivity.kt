@@ -82,6 +82,90 @@ import android.util.Log
 import java.io.FileOutputStream
 import java.io.OutputStream
 import javax.crypto.CipherOutputStream
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.text.font.FontWeight
+import okio.*
+import okhttp3.ResponseBody
+
+class ProgressResponseBody(
+    private val responseBody: ResponseBody,
+    private val onProgress: (Float) -> Unit
+) : ResponseBody() {
+    private var bufferedSource: BufferedSource? = null
+
+    override fun contentType() = responseBody.contentType()
+    override fun contentLength() = responseBody.contentLength()
+
+    override fun source(): BufferedSource {
+        if (bufferedSource == null) {
+            bufferedSource = source(responseBody.source()).buffer()
+        }
+        return bufferedSource!!
+    }
+
+    private fun source(source: Source): Source {
+        val totalBytes = contentLength().takeIf { it > 0 } ?: 1L
+        var totalBytesRead = 0L
+
+        return object : ForwardingSource(source) {
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                val bytesRead = super.read(sink, byteCount)
+                if (bytesRead != -1L) {
+                    totalBytesRead += bytesRead
+                    onProgress(totalBytesRead / totalBytes.toFloat())
+                }
+                return bytesRead
+            }
+        }
+    }
+}
+class ProgressRequestBody(
+    private val file: File,
+    private val contentType: String,
+    private val onProgress: (Float) -> Unit
+) : RequestBody() {
+
+    override fun contentType() = contentType.toMediaTypeOrNull()
+    override fun contentLength() = file.length()
+
+    override fun writeTo(sink: okio.BufferedSink) {
+        val total = file.length().toFloat().coerceAtLeast(1f)
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var uploaded = 0L
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                sink.write(buffer, 0, read)
+                uploaded += read
+                onProgress(uploaded / total)
+            }
+        }
+    }
+}
+class ProgressInputStream(
+    private val wrapped: InputStream,
+    private val totalBytes: Long,
+    private val onProgress: (Float) -> Unit
+) : InputStream() {
+    private var bytesRead = 0L
+    override fun read(): Int {
+        val byte = wrapped.read()
+        if (byte != -1) {
+            bytesRead++
+            onProgress(bytesRead / totalBytes.toFloat())
+        }
+        return byte
+    }
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        val n = wrapped.read(b, off, len)
+        if (n > 0) {
+            bytesRead += n
+            onProgress(bytesRead / totalBytes.toFloat())
+        }
+        return n
+    }
+    override fun close() = wrapped.close()
+}
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -100,15 +184,25 @@ fun ClipboardSyncApp() {
     var availableFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     val ip = prefs.getString("server_ip", "") ?: ""
     var clipboardHistory by remember { mutableStateOf(listOf<String>()) }
+    // PROGRESS STATES
+    var uploadProgress by remember { mutableStateOf<Float?>(null) }
+    var downloadProgress by remember { mutableStateOf<Float?>(null) }
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
-            uploadFileToServer(context, it, ipAddress, password) { uploading ->
-                uploadingCount = when {
-                    uploading -> uploadingCount + 1
-                    uploadingCount > 0 -> uploadingCount - 1
-                    else -> 0
-                }
-            }
+            uploadFileToServer(
+                context,
+                it,
+                ipAddress,
+                password,
+                onUploadingChanged = { uploading ->
+                    uploadingCount = when {
+                        uploading -> uploadingCount + 1
+                        uploadingCount > 0 -> uploadingCount - 1
+                        else -> 0
+                    }
+                },
+                onProgress = { progress -> uploadProgress = progress }
+            )
         }
     }
     val buttonColor = Color(0xFF546E7A)
@@ -170,48 +264,98 @@ fun ClipboardSyncApp() {
             .background(Color(0xFF263238)) // dark blue-grey
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF37474F)),
-        shape = RoundedCornerShape(8.dp),
-        elevation = CardDefaults.cardElevation(4.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Connection Settings",
-                    fontSize = 18.sp,
-                    color = Color.White
-                )
-
-                Text(
-                    text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
-                    color = if (isConnected) Color.Green else Color.Red,
-                    fontSize = 14.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF37474F)),
+            shape = RoundedCornerShape(8.dp),
+            elevation = CardDefaults.cardElevation(4.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Connection Settings",
+                        fontSize = 18.sp,
+                        color = Color.White
+                    )
+                    Text(
+                        text = if (isConnected) "🟢 Connected" else "🔴 Disconnected",
+                        color = if (isConnected) Color.Green else Color.Red,
+                        fontSize = 14.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextField(
+                        value = ipAddress,
+                        onValueChange = {
+                            ipAddress = it
+                            saveIp(it)
+                        },
+                        label = { Text("Server IP Address", color = Color.White) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        colors = TextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedContainerColor = Color(0xFF455A64),
+                            unfocusedContainerColor = Color(0xFF455A64),
+                            focusedLabelColor = Color.White,
+                            unfocusedLabelColor = Color.White,
+                            focusedIndicatorColor = Color.White,
+                            unfocusedIndicatorColor = Color.White,
+                            cursorColor = Color.White
+                        )
+                    )
+                    Button(
+                        onClick = {
+                            discoverService(context) {
+                                ipAddress = it
+                                saveIp(it)
+                                Toast.makeText(context, "🔄 IP updated to $it", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier
+                            .height(56.dp)
+                            .width(56.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = buttonColor,
+                            contentColor = buttonTextColor
+                        ),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("🔄", fontSize = 22.sp)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 TextField(
-                    value = ipAddress,
+                    value = password,
                     onValueChange = {
-                        ipAddress = it
-                        saveIp(it)
+                        password = it
+                        savePassword(it)
                     },
-                    label = { Text("Server IP Address", color = Color.White) },
+                    label = { Text("Server Password", color = Color.White) },
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                tint = Color.White
+                            )
+                        }
+                    },
                     colors = TextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -224,66 +368,9 @@ fun ClipboardSyncApp() {
                         cursorColor = Color.White
                     )
                 )
-
-                Button(
-                    onClick = {
-                        discoverService(context) {
-                            ipAddress = it
-                            saveIp(it)
-                            Toast.makeText(context, "🔄 IP updated to $it", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier
-                        .height(56.dp)
-                        .width(56.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = buttonColor,
-                        contentColor = buttonTextColor
-                    ),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Text("🔄", fontSize = 22.sp)
-                }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            TextField(
-                value = password,
-                onValueChange = {
-                    password = it
-                    savePassword(it)
-                },
-                label = { Text("Server Password", color = Color.White) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                        Icon(
-                            imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                            tint = Color.White
-                        )
-                    }
-                },
-                colors = TextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedContainerColor = Color(0xFF455A64),
-                    unfocusedContainerColor = Color(0xFF455A64),
-                    focusedLabelColor = Color.White,
-                    unfocusedLabelColor = Color.White,
-                    focusedIndicatorColor = Color.White,
-                    unfocusedIndicatorColor = Color.White,
-                    cursorColor = Color.White
-                )
-            )
         }
-    }
         Divider(color = Color.Gray)
-
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -306,29 +393,7 @@ fun ClipboardSyncApp() {
                 Text("\uD83D\uDCE4 Sync Text")
             }
 
-            Button(
-                onClick = {
-                    fetchClipboardFromServer(
-                        context = context,
-                        ip = ip,
-                        password = password,
-                        clipboardManager = clipboardManager,
-                        addToHistory = { text -> addToHistory(text) },
-                        onComplete = { /* handle UI update after fetch */ }
-                    )
-
-                },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(6.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = buttonColor,
-                    contentColor = buttonTextColor
-                )
-            ) {
-                Text("\uD83D\uDCE5 Fetch Text")
-            }
         }
-
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -344,7 +409,6 @@ fun ClipboardSyncApp() {
             ) {
                 Text("📁 Send File")
             }
-
             Button(
                 onClick = {
                     downloadingCount += 1
@@ -354,7 +418,8 @@ fun ClipboardSyncApp() {
                         password = password,
                         clipboardManager = clipboardManager,
                         addToHistory = { text -> clipboardHistory = clipboardHistory + text },
-                        onComplete = { downloadingCount = maxOf(downloadingCount - 1, 0) }
+                        onComplete = { downloadingCount = maxOf(downloadingCount - 1, 0) },
+                        onProgress = { progress -> downloadProgress = progress }
                     )
                 },
                 modifier = Modifier.weight(1f),
@@ -364,10 +429,8 @@ fun ClipboardSyncApp() {
                     contentColor = buttonTextColor
                 )
             ) {
-                Text("📃 Fetch File")
+                Text("📃 Fetch")
             }
-
-
         }
         if (showFileDialog) {
             AlertDialog(
@@ -388,9 +451,11 @@ fun ClipboardSyncApp() {
                                         .fillMaxWidth()
                                         .clickable {
                                             downloadingCount += 1
-                                            downloadFileFromServer(context, file, ipAddress, password) {
-                                                downloadingCount = maxOf(downloadingCount - 1, 0)
-                                            }
+                                            downloadFileFromServer(
+                                                context, file, ipAddress, password,
+                                                onComplete = { downloadingCount = maxOf(downloadingCount - 1, 0) },
+                                                onProgress = { progress -> downloadProgress = progress }
+                                            )
                                             showFileDialog = false
                                         }
                                         .padding(vertical = 8.dp),
@@ -410,25 +475,36 @@ fun ClipboardSyncApp() {
                 containerColor = Color(0xFF37474F)
             )
         }
-
+        // --- Show upload/download progress ---
         if (isUploading) {
             Spacer(modifier = Modifier.height(8.dp))
             Text("Uploading...", fontSize = 14.sp, color = Color.White)
+            LinearProgressIndicator(
+                progress = uploadProgress ?: 0f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp),
+                color = Color(0xFF90CAF9)
+            )
         }
         if (isDownloading) {
             Spacer(modifier = Modifier.height(4.dp))
             Text("Downloading...", fontSize = 14.sp, color = Color.White)
+            LinearProgressIndicator(
+                progress = downloadProgress ?: 0f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp),
+                color = Color(0xFF80CBC4)
+            )
         }
-
         Divider(color = Color.Gray)
         Text("Clipboard History", fontSize = 18.sp, color = Color.White)
-
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = 2.dp)
         ) {
-
             items(history) { item ->
                 Row(
                     modifier = Modifier
@@ -461,8 +537,7 @@ fun ClipboardSyncApp() {
             }
         }
     }
-
-        // Expanded History View Dialog
+    // Expanded History View Dialog
     selectedItem?.let {
         val scrollState = rememberScrollState()
         AlertDialog(
@@ -724,11 +799,14 @@ fun discoverService(context: Context, onFound: (String) -> Unit) {
     nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 }
 
-fun uploadFileToServer(context: Context,
-                       uri: Uri,
-                       ip: String,
-                       password: String,
-                       onUploadingChanged: (Boolean) -> Unit) {
+fun uploadFileToServer(
+    context: Context,
+    uri: Uri,
+    ip: String,
+    password: String,
+    onUploadingChanged: (Boolean) -> Unit,
+    onProgress: (Float?) -> Unit = {} // <-- already present in your code
+) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
         return
@@ -736,17 +814,10 @@ fun uploadFileToServer(context: Context,
     onUploadingChanged(true)
     val contentResolver = context.contentResolver
 
-    // Step 1: Get MIME type and map to extension
     val mimeType = contentResolver.getType(uri)
     val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "bin"
-
-    // Step 2: Try to get the original filename or fallback
     var fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "upload"
-
-    // Step 3: Ensure filename has correct extension
-    if (!fileName.contains('.')) {
-        fileName += ".$extension"
-    }
+    if (!fileName.contains('.')) fileName += ".$extension"
 
     val inputStream = contentResolver.openInputStream(uri) ?: return
     val tempFile = File.createTempFile("upload", null, context.cacheDir)
@@ -756,11 +827,13 @@ fun uploadFileToServer(context: Context,
         }
     }
 
-    val fileBody = tempFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
+    val progressBody = ProgressRequestBody(tempFile, "application/octet-stream") { progress ->
+        Handler(Looper.getMainLooper()).post { onProgress(progress) }
+    }
 
     val multipartBody = MultipartBody.Builder()
         .setType(MultipartBody.FORM)
-        .addFormDataPart("file", fileName, fileBody)
+        .addFormDataPart("file", fileName, progressBody)
         .build()
 
     val request = Request.Builder()
@@ -775,7 +848,8 @@ fun uploadFileToServer(context: Context,
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
                 Toast.makeText(context, "❌ Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
-                onUploadingChanged(false) // Upload ended with failure
+                onUploadingChanged(false)
+                onProgress(null)
             }
         }
 
@@ -786,7 +860,8 @@ fun uploadFileToServer(context: Context,
                 } else {
                     Toast.makeText(context, "⚠️ Upload failed: ${response.code}", Toast.LENGTH_SHORT).show()
                 }
-                onUploadingChanged(false) // Upload ended (success or failure)
+                onUploadingChanged(false)
+                onProgress(null)
             }
         }
     })
@@ -847,10 +922,12 @@ fun downloadFileFromServer(
     filename: String,
     ip: String,
     password: String,
-    onComplete: () -> Unit = {}
+    onComplete: () -> Unit = {},
+    onProgress: (Float?) -> Unit = {}   // <-- new parameter
 ) {
     if (ip.isBlank()) {
         Toast.makeText(context, "❗ No IP address configured", Toast.LENGTH_SHORT).show()
+        onProgress(null)
         onComplete()
         return
     }
@@ -872,6 +949,7 @@ fun downloadFileFromServer(
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
+                onProgress(null)
                 Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 onComplete()
             }
@@ -880,13 +958,21 @@ fun downloadFileFromServer(
         override fun onResponse(call: Call, response: Response) {
             if (!response.isSuccessful || response.body == null) {
                 Handler(Looper.getMainLooper()).post {
+                    onProgress(null)
                     Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
                 return
             }
             try {
-                val inputStream = response.body!!.byteStream()
+                val body = response.body!!
+                val progressBody = ProgressResponseBody(body) { progress ->
+                    Handler(Looper.getMainLooper()).post { onProgress(progress) }
+                }
+                val contentLength = body.contentLength().takeIf { it > 0 }
+                val inputStream = progressBody.byteStream()
+
+
                 val mimeType = URLConnection.guessContentTypeFromName(filename)
                     ?: "application/octet-stream"
 
@@ -913,6 +999,7 @@ fun downloadFileFromServer(
                     saveToDownloadsLegacyUnique(context, filename, createDecryptedStream())
                 }
                 Handler(Looper.getMainLooper()).post {
+                    onProgress(null) // Reset after done
                     if (savedPath != null) {
                         Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
                         Log.d("ClipboardSync", "Download handler completed for $filename, savedPath=$savedPath, actualName=$actualName")
@@ -924,6 +1011,7 @@ fun downloadFileFromServer(
                 }
             } catch (e: Exception) {
                 Handler(Looper.getMainLooper()).post {
+                    onProgress(null)
                     Toast.makeText(context, "❌ File decryption failed: ${e.message}", Toast.LENGTH_LONG).show()
                     onComplete()
                 }
@@ -1017,7 +1105,14 @@ fun saveToDownloadsQAndAboveUnique(
             try {
                 inputStreamFn().use { input ->
                     resolver.openOutputStream(fileUri)?.use { output ->
-                        input.copyTo(output)
+                        val buffer = ByteArray(8192)
+                        var totalRead = 0L
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            totalRead += read
+                            // If your input is a ProgressInputStream, it will already call onProgress.
+                        }
                     } ?: throw IOException("Output stream null")
                 }
                 outputWritten = true
@@ -1136,7 +1231,8 @@ fun fetchClipboardFromServer(
     password: String,
     clipboardManager: ClipboardManager,
     addToHistory: (String) -> Unit,
-    onComplete: () -> Unit
+    onComplete: () -> Unit,
+    onProgress: (Float?) -> Unit = {} // <-- Add this parameter
 ) {
     val request = Request.Builder()
         .url("http://$ip:8000/clipboard")
@@ -1170,7 +1266,14 @@ fun fetchClipboardFromServer(
 
                 if (isFile) {
                     val filename = json.optString("filename", "fetched_file")
-                    downloadFileFromClipboard(context, ip, password, filename, onComplete)
+                    downloadFileFromClipboard(
+                        context,
+                        ip,
+                        password,
+                        filename,
+                        onComplete = onComplete,
+                        onProgress = onProgress // <-- Pass it here
+                    )
                 } else {
                     val encryptedText = json.getString("clipboard")
                     val text = decryptAESCBC(encryptedText, password)
@@ -1190,7 +1293,8 @@ fun downloadFileFromClipboard(
     ip: String,
     password: String,
     filename: String,
-    onComplete: () -> Unit
+    onComplete: () -> Unit,
+    onProgress: (Float?) -> Unit = {}
 ) {
     Log.d("ClipboardSync", "downloadFileFromClipboard CALLED for $filename")
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1212,6 +1316,7 @@ fun downloadFileFromClipboard(
     client.newCall(request).enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             Handler(Looper.getMainLooper()).post {
+                onProgress(null)
                 Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 onComplete()
             }
@@ -1219,13 +1324,20 @@ fun downloadFileFromClipboard(
         override fun onResponse(call: Call, response: Response) {
             if (!response.isSuccessful || response.body == null) {
                 Handler(Looper.getMainLooper()).post {
+                    onProgress(null)
                     Toast.makeText(context, "⚠️ Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
                 return
             }
             try {
-                val inputStream = response.body!!.byteStream()
+                val body = response.body!!
+                val progressBody = ProgressResponseBody(body) { progress ->
+                    Handler(Looper.getMainLooper()).post { onProgress(progress) }
+                }
+                val contentLength = body.contentLength().takeIf { it > 0 }
+                val inputStream = progressBody.byteStream()
+
                 val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
 
                 fun createDecryptedStream(): InputStream {
@@ -1251,6 +1363,7 @@ fun downloadFileFromClipboard(
                     saveToDownloadsLegacyUnique(context, filename, createDecryptedStream())
                 }
                 Handler(Looper.getMainLooper()).post {
+                    onProgress(null)
                     if (savedPath != null) {
                         Toast.makeText(context, "✅ Downloaded: $actualName", Toast.LENGTH_LONG).show()
                         Log.d("ClipboardSync", "Download handler completed for $filename, savedPath=$savedPath, actualName=$actualName")
@@ -1262,6 +1375,7 @@ fun downloadFileFromClipboard(
                 }
             } catch (e: Exception) {
                 Handler(Looper.getMainLooper()).post {
+                    onProgress(null)
                     Toast.makeText(context, "❌ File decryption failed: ${e.message}", Toast.LENGTH_LONG).show()
                     onComplete()
                 }
@@ -1322,7 +1436,8 @@ class MainActivity : ComponentActivity() {
                         Handler(Looper.getMainLooper()).postDelayed({
                             moveTaskToBack(true)
                         }, 1000)
-                    }
+                    },
+                    onProgress = {}   // <-- ADD THIS LINE
                 )
                 intent.removeExtra("fetchNow")
                 Handler(Looper.getMainLooper()).postDelayed({
@@ -1374,3 +1489,4 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, "\u2705 Overlay service started", Toast.LENGTH_SHORT).show()
     }
 }
+
