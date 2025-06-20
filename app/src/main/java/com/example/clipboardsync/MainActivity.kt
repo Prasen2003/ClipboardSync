@@ -86,6 +86,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.text.font.FontWeight
 import okio.*
 import okhttp3.ResponseBody
+import android.content.BroadcastReceiver
 
 class ProgressResponseBody(
     private val responseBody: ResponseBody,
@@ -1411,38 +1412,34 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-
         val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
 
         if (intent.getBooleanExtra("syncNow", false)) {
             Handler(Looper.getMainLooper()).postDelayed({
                 syncClipboardFromActivity()
                 intent.removeExtra("syncNow")
+                moveTaskToBack(true)
             }, 50)
         }
 
         if (intent.getBooleanExtra("fetchNow", false)) {
             Handler(Looper.getMainLooper()).postDelayed({
                 val clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val password = prefs.getString("password", "") ?: ""
-
+                val password = prefs.getString("server_password", "") ?: ""
                 fetchClipboardFromServer(
                     context = this,
                     ip = prefs.getString("server_ip", "") ?: "",
                     password = password,
                     clipboardManager = clipboardManager,
-                    addToHistory = { _ -> }, // assuming you have this function
+                    addToHistory = { _ -> },
                     onComplete = {
                         Handler(Looper.getMainLooper()).postDelayed({
                             moveTaskToBack(true)
                         }, 1000)
                     },
-                    onProgress = {}   // <-- ADD THIS LINE
+                    onProgress = {}
                 )
                 intent.removeExtra("fetchNow")
-                Handler(Looper.getMainLooper()).postDelayed({
-                    moveTaskToBack(true)
-                }, 1000) // ✅ same delay as sync
             }, 50)
         }
     }

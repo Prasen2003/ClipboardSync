@@ -19,10 +19,33 @@ class OverlayService : Service() {
         super.onCreate()
         createNotificationChannel()
 
+        // --- Add PendingIntents for notification actions ---
+        val syncIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("syncNow", true)
+        }
+        val syncPendingIntent = PendingIntent.getActivity(
+            this, 100, syncIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        )
+
+        val fetchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("fetchNow", true)
+        }
+        val fetchPendingIntent = PendingIntent.getActivity(
+            this, 101, fetchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        )
+
         val notification = NotificationCompat.Builder(this, "clipboard_channel")
             .setContentTitle("Clipboard Sync Running")
-            .setContentText("Tap bubble to sync clipboard")
+            .setContentText("Tap bubble or use notification buttons")
             .setSmallIcon(R.drawable.ic_clipboard_sync)
+            .addAction(R.drawable.ic_clipboard_sync, "Sync Clipboard", syncPendingIntent)
+            .addAction(R.drawable.ic_clipboard_sync, "Fetch Clipboard", fetchPendingIntent)
             .build()
 
         startForeground(1, notification)

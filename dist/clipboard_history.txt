@@ -1,4 +1,8 @@
 [
+  "github copilot",
+  "https://github.com/copilot/c/4dd5d915-687b-481d-8b91-bb1f0d1dc825",
+  "copilot",
+  "C:\\Users\\Prasen\\AndroidStudioProjects\\ClipboardSync\\dist\\received_files",
   "modifier = Modifier.weight(1f),\r\n    shape = RoundedCornerShape(6.dp),",
   "And keep (or rename) t",
   "The missing progress bar",
@@ -14,9 +18,5 @@
   "\"clipboard\": encrypt_text(clipboard_text, PASSWORD),",
   "Fetch Clipboard",
   "Saving",
-  "Saving file",
-  "file",
-  "C:\\Users\\Prasen\\AndroidStudioProjects\\ClipboardSync\\dist\\received_files",
-  " job search ",
-  "search "
+  "Saving file"
 ]
