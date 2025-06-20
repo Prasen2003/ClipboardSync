@@ -80,7 +80,8 @@ import android.app.NotificationManager
 import androidx.activity.result.ActivityResultLauncher
 import android.util.Log
 import java.io.FileOutputStream
-
+import java.io.OutputStream
+import javax.crypto.CipherOutputStream
 @Composable
 fun ClipboardSyncApp() {
     val context = LocalContext.current
@@ -486,6 +487,7 @@ fun ClipboardSyncApp() {
         )
     }
 }
+
 // --- CONFIG --- //
 private const val PBKDF2_ITERATIONS = 10000
 private const val KEY_LENGTH = 256 // bits
@@ -537,29 +539,62 @@ fun decryptAESCBC(encrypted: String, password: String): String {
 }
 
 // --- SECURE ENCRYPTION FOR FILES (BYTES) --- //
-fun encryptFileBytesCBC(data: ByteArray, password: String): ByteArray {
+/**
+ * Encrypts input stream using AES/CBC and writes output as [salt][iv]
+ * Designed for large file support - does NOT load entire file in memory.
+ */
+fun encryptStreamCBC(
+    input: InputStream,
+    output: OutputStream,
+    password: String,
+    bufferSize: Int = 8192
+) {
     val salt = randomBytes(SALT_SIZE)
     val iv = randomBytes(IV_SIZE)
+    output.write(salt)
+    output.write(iv)
     val key = deriveKey(password, salt)
     val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
     cipher.init(Cipher.ENCRYPT_MODE, key, IvParameterSpec(iv))
-    val encrypted = cipher.doFinal(data)
-    // Output: salt + iv + ciphertext
-    val out = ByteArray(salt.size + iv.size + encrypted.size)
-    System.arraycopy(salt, 0, out, 0, salt.size)
-    System.arraycopy(iv, 0, out, salt.size, iv.size)
-    System.arraycopy(encrypted, 0, out, salt.size + iv.size, encrypted.size)
-    return out
+    CipherOutputStream(output, cipher).use { cipherOut ->
+        val buffer = ByteArray(bufferSize)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            cipherOut.write(buffer, 0, read)
+        }
+    }
 }
 
-fun decryptFileBytesCBC(data: ByteArray, password: String): ByteArray {
-    val salt = data.copyOfRange(0, SALT_SIZE)
-    val iv = data.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
-    val ciphertext = data.copyOfRange(SALT_SIZE + IV_SIZE, data.size)
+/**
+ * Decrypts input stream (with [salt][iv]) and writes plaintext output.
+ * Designed for large file support - does NOT load entire file in memory.
+ */
+fun decryptStreamCBC(
+    input: InputStream,
+    output: OutputStream,
+    password: String,
+    bufferSize: Int = 8192
+) {
+    // Read salt + iv
+    val header = ByteArray(SALT_SIZE + IV_SIZE)
+    var read = 0
+    while (read < header.size) {
+        val n = input.read(header, read, header.size - read)
+        if (n == -1) throw IllegalArgumentException("Invalid encrypted file (header too short)")
+        read += n
+    }
+    val salt = header.copyOfRange(0, SALT_SIZE)
+    val iv = header.copyOfRange(SALT_SIZE, SALT_SIZE + IV_SIZE)
     val key = deriveKey(password, salt)
     val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
     cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
-    return cipher.doFinal(ciphertext)
+    CipherInputStream(input, cipher).use { cipherIn ->
+        val buffer = ByteArray(bufferSize)
+        var len: Int
+        while (cipherIn.read(buffer).also { len = it } != -1) {
+            output.write(buffer, 0, len)
+        }
+    }
 }
 
 fun showDownloadNotification(context: Context, filePathOrUri: String, filename: String, mimeType: String) {
@@ -715,11 +750,11 @@ fun uploadFileToServer(context: Context,
 
     val inputStream = contentResolver.openInputStream(uri) ?: return
     val tempFile = File.createTempFile("upload", null, context.cacheDir)
-    inputStream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
-
-    val fileBytes = tempFile.readBytes()
-    val encryptedBytes = encryptFileBytesCBC(fileBytes, password)
-    tempFile.writeBytes(encryptedBytes)
+    inputStream.use { input ->
+        tempFile.outputStream().use { output ->
+            encryptStreamCBC(input, output, password)
+        }
+    }
 
     val fileBody = tempFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
 
@@ -820,7 +855,6 @@ fun downloadFileFromServer(
         return
     }
     Log.d("ClipboardSync", "downloadFileFromServer CALLED for $filename")
-    // CLEANUP: Remove all possible previous MediaStore entries for this filename and up to 9 suffixes
     val baseName = filename.substringBeforeLast('.')
     val ext = filename.substringAfterLast('.', "")
     val suffixes = listOf("") + (1..9).map { " ($it)" }
@@ -852,13 +886,12 @@ fun downloadFileFromServer(
                 return
             }
             try {
-                val encryptedBytes = response.body!!.bytes()
+                val inputStream = response.body!!.byteStream()
                 val mimeType = URLConnection.guessContentTypeFromName(filename)
                     ?: "application/octet-stream"
 
                 fun createDecryptedStream(): InputStream {
-                    val encryptedStream = encryptedBytes.inputStream()
-                    val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
+                    val b64Stream = Base64InputStream(inputStream, android.util.Base64.DEFAULT)
                     val header = ByteArray(SALT_SIZE + IV_SIZE)
                     var read = 0
                     while (read < header.size) {
@@ -898,6 +931,7 @@ fun downloadFileFromServer(
         }
     })
 }
+
 fun getUniqueFilename(context: Context, filename: String, isLegacy: Boolean): String {
     val (base, ext) = run {
         val dot = filename.lastIndexOf('.')
@@ -1157,8 +1191,8 @@ fun downloadFileFromClipboard(
     password: String,
     filename: String,
     onComplete: () -> Unit
-) {Log.d("ClipboardSync", "downloadFileFromClipboard CALLED for $filename")
-    // CLEANUP: Remove all possible previous MediaStore entries for this filename and up to 9 suffixes
+) {
+    Log.d("ClipboardSync", "downloadFileFromClipboard CALLED for $filename")
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val baseName = filename.substringBeforeLast('.')
         val ext = filename.substringAfterLast('.', "")
@@ -1191,12 +1225,11 @@ fun downloadFileFromClipboard(
                 return
             }
             try {
-                val encryptedBytes = response.body!!.bytes()
+                val inputStream = response.body!!.byteStream()
                 val mimeType = URLConnection.guessContentTypeFromName(filename) ?: "application/octet-stream"
 
                 fun createDecryptedStream(): InputStream {
-                    val encryptedStream = encryptedBytes.inputStream()
-                    val b64Stream = Base64InputStream(encryptedStream, android.util.Base64.DEFAULT)
+                    val b64Stream = Base64InputStream(inputStream, android.util.Base64.DEFAULT)
                     val header = ByteArray(SALT_SIZE + IV_SIZE)
                     var read = 0
                     while (read < header.size) {
